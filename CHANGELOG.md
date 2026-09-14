@@ -6,6 +6,12 @@ Storm Dock 的重要变更记录在此。
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-09-14
+
+### Fixed
+
+- 修复发版构建：`canLaunchGrokBot` 在排除 `grok` 后仍比较 `"grok"`，触发 TypeScript TS2367，导致 `npm run build` 失败。
+
 ## [1.5.2] - 2026-09-14
 
 ### Added
@@ -80,7 +86,8 @@ Storm Dock 的重要变更记录在此。
 4. CI 发布安装包与 latest.json；notes 优先取本 CHANGELOG 对应小节。
 -->
 
-[Unreleased]: https://github.com/tangsj-hub/Storm-Dock/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/tangsj-hub/Storm-Dock/compare/v1.5.3...HEAD
+[1.5.3]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.3
 [1.5.2]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.2
 [1.5.1]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.1
 [1.5.0]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.0

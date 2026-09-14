@@ -68,10 +68,9 @@ export function isGrokBotFreePlan(account: Account) {
 /** Cursor paid + any Grok Build account may launch Grok Bot. */
 export function canLaunchGrokBot(account: Account) {
   if (account.application === "grok") return true;
+  // After the grok early-return, application is narrowed to cursor | codex | undefined.
+  if (account.application && account.application !== "cursor") return false;
   if (isGrokBotFreePlan(account)) return false;
-  if (account.application && account.application !== "cursor" && account.application !== "grok") {
-    return false;
-  }
   return true;
 }
 
