@@ -41,15 +41,26 @@ pub(crate) struct LaunchPreparation {
     pub(crate) status: &'static str,
 }
 
-enum SessionTarget<'a> {
+/// Plain Grok Bot client login state (what sand-secrets stores after encrypt).
+/// Distinct from Storm-Dock Cursor account export.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GrokBotClientExport {
+    pub(crate) kind: &'static str,
+    pub(crate) version: u32,
+    pub(crate) slot: String,
+    pub(crate) auth_id: String,
+    pub(crate) email: String,
+    pub(crate) access_token: String,
+    pub(crate) refresh_token: String,
+    pub(crate) profile: Value,
+    /// Whether this slot is currently active in the local Grok Bot client.
+    pub(crate) active_in_client: bool,
+}
+
+enum SessionTarget {
     Same,
-    Different {
-        access: &'a str,
-        refresh: &'a str,
-        sub: String,
-        email: String,
-        slot: String,
-    },
+    Different,
 }
 
 #[cfg(target_os = "windows")]
@@ -413,40 +424,139 @@ fn wait_until_stopped() -> Result<()> {
     ))
 }
 
-fn session_target<'a>(session: &'a Session, root: &Value) -> Result<SessionTarget<'a>> {
+fn session_target(session: &Session, root: &Value) -> Result<SessionTarget> {
+    let account = client_account_from_session(session)?;
+    let active = active_slot_from_root(root);
+    if active.as_deref() == Some(account.slot.as_str()) {
+        Ok(SessionTarget::Same)
+    } else {
+        Ok(SessionTarget::Different)
+    }
+}
+
+/// Build the Grok Bot client login payload from a Storm-Dock session.
+/// Launch writes this (encrypted) into sand-secrets; export returns it in plain form.
+pub(crate) fn client_account_from_session(session: &Session) -> Result<GrokBotClientExport> {
     let access = session
         .values
         .get(ACCESS_TOKEN_KEY)
-        .ok_or(AppError::SecretMissing)?;
+        .ok_or(AppError::SecretMissing)?
+        .clone();
     let refresh = session
         .values
         .get("cursorAuth/refreshToken")
-        .ok_or(AppError::SecretMissing)?;
+        .ok_or(AppError::SecretMissing)?
+        .clone();
     let claims =
-        jwt_claims(access).ok_or_else(|| AppError::Message("Cursor 登录凭据无效。".into()))?;
-    let sub = claims
+        jwt_claims(&access).ok_or_else(|| AppError::Message("Grok Bot 登录凭据无效。".into()))?;
+    let auth_id = claims
         .get("sub")
         .and_then(Value::as_str)
         .filter(|v| !v.is_empty())
-        .ok_or_else(|| AppError::Message("Cursor 登录凭据缺少账号标识。".into()))?
+        .ok_or_else(|| AppError::Message("Grok Bot 登录凭据缺少账号标识。".into()))?
         .to_owned();
     let email = claims
         .get("email")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    let slot = account_slot(&sub);
-    let active = active_slot_from_root(root);
-    if active.as_deref() == Some(&slot) {
-        Ok(SessionTarget::Same)
-    } else {
-        Ok(SessionTarget::Different {
-            access,
-            refresh,
-            sub,
-            email,
-            slot,
-        })
+    let slot = account_slot(&auth_id);
+    let active_in_client = active_slot().as_deref() == Some(slot.as_str());
+    Ok(GrokBotClientExport {
+        kind: "grok-bot-client",
+        version: 1,
+        slot,
+        auth_id: auth_id.clone(),
+        email: email.clone(),
+        access_token: access,
+        refresh_token: refresh,
+        profile: serde_json::json!({ "authId": auth_id, "email": email }),
+        active_in_client,
+    })
+}
+
+pub(crate) fn export_client_account(session: &Session) -> Result<Value> {
+    Ok(serde_json::to_value(client_account_from_session(session)?)?)
+}
+
+/// Write / activate a Grok Bot client account in sand-secrets, then launch.
+pub(crate) fn apply_client_account_and_launch(account: &GrokBotClientExport) -> Result<()> {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        let _guard = OPERATION_LOCK
+            .lock()
+            .map_err(|_| AppError::Message("Grok Bot 操作锁不可用。".into()))?;
+        platform::ensure_installed()?;
+        let path = platform::data_path()?;
+        let original = fs::read(&path).ok();
+        let mut root = read_store_root(&path)?;
+        if active_slot_from_root(&root).as_deref() == Some(account.slot.as_str()) {
+            platform::launch()?;
+            return Ok(());
+        }
+        if platform::is_running() {
+            platform::quit_and_wait()?;
+        }
+        let accounts: Value = root
+            .get(ACCOUNTS_KEY)
+            .and_then(Value::as_str)
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_else(|| serde_json::json!({"accounts": {}}));
+        let mut account_map: BTreeMap<String, Value> = accounts
+            .get("accounts")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let profile = account.profile.to_string();
+        let (access_enc, refresh_enc, profile_enc) = platform::encrypt_account_fields(
+            &account.access_token,
+            &account.refresh_token,
+            &profile,
+        )?;
+        account_map.insert(
+            account.slot.clone(),
+            serde_json::json!({
+                "cursor-access-token": access_enc,
+                "cursor-refresh-token": refresh_enc,
+                "cursor-account-profile": profile_enc,
+            }),
+        );
+        root[ACCOUNTS_KEY] = Value::String(
+            serde_json::json!({"active": account.slot, "accounts": account_map}).to_string(),
+        );
+        let encoded = serde_json::to_vec_pretty(&root)?;
+        let _: Value = serde_json::from_slice(&encoded)
+            .map_err(|_| AppError::Message("Grok Bot 登录数据验证失败。".into()))?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let temp = path.with_file_name(format!(".storm-dock-{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = fs::File::create(&temp)?;
+            file.write_all(&encoded)?;
+            file.sync_all()?;
+            fs::rename(&temp, &path)?;
+            platform::launch()
+        })();
+        if result.is_err() {
+            match &original {
+                Some(bytes) => {
+                    let _ = fs::write(&path, bytes);
+                }
+                None => {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+            let _ = fs::remove_file(&temp);
+        }
+        result
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = account;
+        platform::unsupported()
     }
 }
 
@@ -469,10 +579,10 @@ pub(crate) fn prepare_for_session(session: &Session) -> Result<LaunchPreparation
             platform::launch()?;
             Ok(LaunchPreparation { status: "same" })
         }
-        SessionTarget::Different { .. } if platform::is_running() => Ok(LaunchPreparation {
+        SessionTarget::Different if platform::is_running() => Ok(LaunchPreparation {
             status: "requiresConfirmation",
         }),
-        SessionTarget::Different { .. } => Ok(LaunchPreparation { status: "ready" }),
+        SessionTarget::Different => Ok(LaunchPreparation { status: "ready" }),
     }
 }
 
@@ -483,82 +593,8 @@ pub(crate) fn prepare_for_session(_: &Session) -> Result<LaunchPreparation> {
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn confirm_for_session(session: &Session) -> Result<()> {
-    let _guard = OPERATION_LOCK
-        .lock()
-        .map_err(|_| AppError::Message("Grok Bot 操作锁不可用。".into()))?;
-    platform::ensure_installed()?;
-    let path = platform::data_path()?;
-    let original = fs::read(&path).ok();
-    let mut root = read_store_root(&path)?;
-    let target = session_target(session, &root)?;
-    if matches!(target, SessionTarget::Same) {
-        platform::launch()?;
-        return Ok(());
-    }
-    if platform::is_running() {
-        platform::quit_and_wait()?;
-    }
-    let SessionTarget::Different {
-        access,
-        refresh,
-        sub,
-        email,
-        slot,
-    } = target
-    else {
-        unreachable!()
-    };
-    let accounts: Value = root
-        .get(ACCOUNTS_KEY)
-        .and_then(Value::as_str)
-        .and_then(|raw| serde_json::from_str(raw).ok())
-        .unwrap_or_else(|| serde_json::json!({"accounts": {}}));
-    let mut account_map: BTreeMap<String, Value> = accounts
-        .get("accounts")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    let profile = serde_json::json!({"authId": sub, "email": email}).to_string();
-    let (access_enc, refresh_enc, profile_enc) =
-        platform::encrypt_account_fields(access, refresh, &profile)?;
-    account_map.insert(
-        slot.clone(),
-        serde_json::json!({
-            "cursor-access-token": access_enc,
-            "cursor-refresh-token": refresh_enc,
-            "cursor-account-profile": profile_enc,
-        }),
-    );
-    root[ACCOUNTS_KEY] =
-        Value::String(serde_json::json!({"active": slot, "accounts": account_map}).to_string());
-    let encoded = serde_json::to_vec_pretty(&root)?;
-    let _: Value = serde_json::from_slice(&encoded)
-        .map_err(|_| AppError::Message("Grok Bot 登录数据验证失败。".into()))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_file_name(format!(".storm-dock-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| -> Result<()> {
-        let mut file = fs::File::create(&temp)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
-        fs::rename(&temp, &path)?;
-        platform::launch()
-    })();
-    if result.is_err() {
-        match &original {
-            Some(bytes) => {
-                let _ = fs::write(&path, bytes);
-            }
-            None => {
-                let _ = fs::remove_file(&path);
-            }
-        }
-        let _ = fs::remove_file(&temp);
-    }
-    result
+    let account = client_account_from_session(session)?;
+    apply_client_account_and_launch(&account)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -621,13 +657,14 @@ mod tests {
             ]),
             raw_export: None,
         };
-        match session_target(&session, &serde_json::json!({})).expect("target") {
-            SessionTarget::Different { slot, email, .. } => {
-                assert_eq!(slot, account_slot("auth0|user-1"));
-                assert_eq!(email, "one@example.com");
-            }
-            SessionTarget::Same => panic!("empty store must not look signed in"),
-        }
+        let export = client_account_from_session(&session).expect("client export");
+        assert_eq!(export.slot, account_slot("auth0|user-1"));
+        assert_eq!(export.email, "one@example.com");
+        assert_eq!(export.kind, "grok-bot-client");
+        assert!(matches!(
+            session_target(&session, &serde_json::json!({})).expect("target"),
+            SessionTarget::Different
+        ));
     }
 
     #[test]

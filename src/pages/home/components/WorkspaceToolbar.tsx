@@ -14,6 +14,8 @@ type Props = {
   pluginsExpanded: boolean;
   refreshing: boolean;
   sessionsRefreshing: boolean;
+  showAddAccount?: boolean;
+  sessionsRefreshLabel?: string;
   onExport: () => void;
   onPluginsExpandedChange: (expanded: boolean) => void;
   onRefresh: () => void;
@@ -22,14 +24,30 @@ type Props = {
 
 export function WorkspaceToolbar(props: Props) {
   const { t } = useTranslation();
-  const { section, busy, canManageAccounts, hasAccounts, kind, pluginsExpanded, refreshing, sessionsRefreshing } = props;
+  const {
+    section,
+    busy,
+    canManageAccounts,
+    hasAccounts,
+    kind,
+    pluginsExpanded,
+    refreshing,
+    sessionsRefreshing,
+    showAddAccount = true,
+    sessionsRefreshLabel,
+  } = props;
+  const sessionsLabel = sessionsRefreshLabel ?? t("refreshSessions");
   return <div aria-label={t("sectionActions")} className={styles.contextToolbar} data-section={section}>
     {section === "accounts" && <>
-      <Tooltip content={t("export")}><button aria-label={t("export")} className={styles.iconButton} disabled={busy || !canManageAccounts || !hasAccounts} onClick={props.onExport} type="button"><Download aria-hidden="true" size={19} /></button></Tooltip>
-      <Tooltip content={t("refresh")}><button aria-label={t("refresh")} className={styles.iconButton} disabled={busy || !canManageAccounts} onClick={props.onRefresh} type="button"><RefreshCw aria-hidden="true" className={refreshing ? styles.spinning : undefined} size={19} /></button></Tooltip>
-      <a aria-disabled={busy || !canManageAccounts} className={styles.addButton} href={busy || !canManageAccounts ? undefined : `/add.html?kind=${kind}`}><Plus aria-hidden="true" size={18} />{t("addAccount")}</a>
+      {!showAddAccount ? (
+        <Tooltip content={t("refreshGrokBotAllUsage")}><button aria-label={t("refreshGrokBotAllUsage")} className={styles.iconButton} disabled={busy || refreshing} onClick={props.onRefresh} type="button"><RefreshCw aria-hidden="true" className={refreshing ? styles.spinning : undefined} size={19} /></button></Tooltip>
+      ) : <>
+        <Tooltip content={t("export")}><button aria-label={t("export")} className={styles.iconButton} disabled={busy || !canManageAccounts || !hasAccounts} onClick={props.onExport} type="button"><Download aria-hidden="true" size={19} /></button></Tooltip>
+        <Tooltip content={t("refresh")}><button aria-label={t("refresh")} className={styles.iconButton} disabled={busy || !canManageAccounts} onClick={props.onRefresh} type="button"><RefreshCw aria-hidden="true" className={refreshing ? styles.spinning : undefined} size={19} /></button></Tooltip>
+        <a aria-disabled={busy || !canManageAccounts} className={styles.addButton} href={busy || !canManageAccounts ? undefined : `/add.html?kind=${kind}`}><Plus aria-hidden="true" size={18} />{t("addAccount")}</a>
+      </>}
     </>}
     {section === "plugins" && <Tooltip content={pluginsExpanded ? t("collapsePluginChildren") : t("expandPluginChildren")}><button aria-expanded={pluginsExpanded} aria-label={pluginsExpanded ? t("collapsePluginChildren") : t("expandPluginChildren")} className={styles.iconButton} onClick={() => props.onPluginsExpandedChange(!pluginsExpanded)} type="button">{pluginsExpanded ? <ChevronsDownUp aria-hidden="true" size={19} /> : <ChevronsUpDown aria-hidden="true" size={19} />}</button></Tooltip>}
-    {(section === "sessions" || section === "grokBot") && <Tooltip content={t("refreshSessions")}><button aria-label={t("refreshSessions")} className={styles.iconButton} disabled={sessionsRefreshing} onClick={props.onSessionsRefresh} type="button"><RefreshCw aria-hidden="true" className={sessionsRefreshing ? styles.spinning : undefined} size={19} /></button></Tooltip>}
+    {section === "sessions" && <Tooltip content={sessionsLabel}><button aria-label={sessionsLabel} className={styles.iconButton} disabled={sessionsRefreshing} onClick={props.onSessionsRefresh} type="button"><RefreshCw aria-hidden="true" className={sessionsRefreshing ? styles.spinning : undefined} size={19} /></button></Tooltip>}
   </div>;
 }

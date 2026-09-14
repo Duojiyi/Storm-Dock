@@ -24,6 +24,7 @@
 .addButton:hover { background: var(--accent-hover); }
 .addButton[aria-disabled="true"] { opacity: .48; pointer-events: none; }
 .workspace { display: grid; flex: 1; gap: 16px; grid-template-columns: 48px minmax(0, 1fr); margin: 30px 0 0; min-height: 0; overflow: hidden; width: 100%; }
+.workspaceGrokBot { grid-template-columns: minmax(0, 1fr); }
 .sidebar { align-items: center; border-right: 1px solid var(--border); display: flex; padding: 4px 8px 0 0; }
 .sidebarNav { display: grid; gap: 6px; }
 .sidebarItem { align-items: center; background: transparent; border: 0; border-radius: 5px; color: var(--muted); display: inline-flex; height: 36px; justify-content: center; padding: 0; position: relative; width: 36px; }
@@ -32,14 +33,45 @@
 .sidebarItemActive:hover { background: var(--info-bg); color: var(--info); }
 .sidebarBadge { align-items: center; background: var(--accent); border: 1px solid var(--solid); border-radius: 999px; color: var(--on-accent); display: inline-flex; font-size: 9px; font-weight: 700; height: 16px; justify-content: center; line-height: 1; min-width: 16px; padding: 0 3px; pointer-events: none; position: absolute; right: -5px; top: -5px; }
 .sidebarAppIcon { display: block; height: 18px; object-fit: contain; width: 18px; }
-.grokBotStatus { align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 12px; grid-template-columns: 36px minmax(0, 1fr); margin-bottom: 12px; min-height: 64px; padding: 10px 14px; }
-.grokBotStatusIcon { display: block; height: 36px; object-fit: contain; width: 36px; }
+.sidebarGrokBotIcon { display: block; height: 26px; object-fit: contain; width: 26px; }
+
+.grokBotHeaderStack { display: grid; gap: 8px; margin-bottom: 12px; }
+.grokBotInstallBar { align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 12px; grid-template-columns: 44px minmax(0, 1fr); min-height: 60px; padding: 10px 14px; }
+.grokBotInstallIconButton { align-items: center; background: transparent; border: 1px solid var(--border-strong); border-radius: 8px; cursor: pointer; display: inline-flex; height: 40px; justify-content: center; padding: 0; position: relative; width: 40px; }
+.grokBotInstallIconButton:hover { background: var(--hover); border-color: var(--info-border); }
+.grokBotInstallIcon { display: block; height: 26px; object-fit: contain; width: 26px; }
+.grokBotInstallExternal { color: var(--muted); position: absolute; right: 3px; top: 3px; }
+.grokBotInstallCopy { min-width: 0; }
+.grokBotInstallCopy strong { display: block; font-size: 14px; font-weight: 680; }
+.grokBotInstallBar .metaBadge { align-items: center; background: var(--badge); border: 0; border-radius: 3px; color: var(--badge-fg); display: inline-flex; font-size: 10px; font-weight: 650; gap: 4px; line-height: 18px; margin: 0; padding: 0 6px; }
+
+.grokBotStatus { align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 12px; grid-template-columns: 40px minmax(0, 1fr) auto; margin-bottom: 12px; min-height: 72px; padding: 10px 14px; }
+.grokBotStatusIcon { display: block; height: 40px; object-fit: contain; width: 40px; }
 .grokBotStatusCopy { min-width: 0; }
 .grokBotStatusCopy strong { display: block; font-size: 14px; font-weight: 680; }
+.grokBotStatusTitleRow { align-items: center; display: flex; gap: 6px; min-width: 0; }
+.grokBotStatusTitleRow strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grokBotTitleLinkButton { align-items: center; background: transparent; border: 0; border-radius: 4px; color: var(--muted); display: inline-flex; flex: 0 0 auto; height: 22px; justify-content: center; padding: 0; width: 22px; }
+.grokBotTitleLinkButton:hover { background: var(--hover); color: var(--info); }
+.grokBotStatusMeta { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .grokBotStatus .metaBadge { align-items: center; background: var(--badge); border: 0; border-radius: 3px; color: var(--badge-fg); display: inline-flex; font-size: 10px; font-weight: 650; gap: 4px; line-height: 18px; margin: 0; padding: 0 6px; }
 .grokBotReadyBadge { background: var(--ok-bg) !important; color: var(--ok) !important; }
 .grokBotUnavailableBadge { background: var(--warn-bg) !important; color: var(--warn) !important; }
 .grokBotCurrentAccountBadge { background: var(--ok-bg) !important; color: var(--ok) !important; }
+.grokBotUsageBadge { background: var(--info-bg) !important; color: var(--info) !important; }
+.grokBotStatusActions { align-items: center; display: inline-flex; flex: 0 0 auto; gap: 6px; }
+.grokBotAccountSwitch { align-items: center; background: var(--solid); border: 1px solid var(--border-strong); border-radius: 5px; color: var(--fg); display: inline-flex; font-size: 12px; font-weight: 650; gap: 6px; min-height: 34px; padding: 0 10px; white-space: nowrap; }
+.grokBotAccountSwitch:hover, .grokBotAccountSwitch[data-state="open"] { background: var(--hover); }
+.grokBotAccountSwitch:disabled { opacity: .48; }
+.grokBotAccountSwitchLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grokBotAccountMenu { background: var(--solid); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 20px var(--shadow-strong); max-height: min(360px, 70vh); min-width: 260px; overflow: auto; padding: 4px; z-index: 40; }
+.grokBotAccountMenuItem { align-items: flex-start; border-radius: 4px; color: var(--fg); cursor: pointer; display: grid; gap: 2px; outline: none; padding: 8px 10px; }
+.grokBotAccountMenuItem[data-highlighted] { background: var(--info-bg); color: var(--info); }
+.grokBotAccountMenuItem[data-disabled] { cursor: default; opacity: .55; }
+.grokBotAccountMenuItemTop { align-items: center; display: flex; gap: 8px; justify-content: space-between; min-width: 0; }
+.grokBotAccountMenuItemName { font-size: 13px; font-weight: 650; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grokBotAccountMenuItemMeta { color: var(--muted); font-size: 11px; line-height: 16px; }
+.grokBotAccountMenuEmpty { color: var(--muted); font-size: 12px; padding: 10px; }
 .dialogInput { background: var(--solid); border: 1px solid var(--border-strong); border-radius: 5px; color: var(--fg); font-size: 13px; margin: 14px 0 0; min-height: 34px; padding: 0 10px; width: 100%; }
 .content { min-width: 0; min-height: 0; overflow-y: auto; }
 .accountList { display: grid; gap: 8px; }
@@ -59,9 +91,11 @@
 .accountCopy .kindBadge svg { flex: 0 0 auto; }
 .accountCopy .kindAccount { background: var(--kind-account-bg); color: var(--kind-account-fg); }
 .accountCopy .kindApiKey { background: var(--kind-key-bg); color: var(--kind-key-fg); }
+.accountCopy .kindGrok { background: var(--info-bg); color: var(--info); }
 .accountCopy .plan-pro { background: var(--info-bg); color: var(--info); }
 .accountCopy .plan-team, .accountCopy .plan-enterprise { background: var(--plan-team-bg); color: var(--plan-team-fg); }
 .accountCopy .plan-free { background: var(--ok-bg); color: var(--ok); }
+.accountCopy .plan-unknown { background: var(--muted-bg, var(--kind-account-bg)); color: var(--muted, var(--kind-account-fg)); }
 .accountCopy .planDefault { background: var(--badge); color: var(--muted); }
 .accountCopy .invalidBadge { background: var(--danger-bg); color: var(--danger); }
 .accountCopy .missingBadge { background: var(--warn-bg); color: var(--warn); }

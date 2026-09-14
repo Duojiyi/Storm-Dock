@@ -279,7 +279,7 @@ impl Controller {
             ApplicationKind::Grok => self.grok.live_match_session().ok(),
             ApplicationKind::Cursor => self.cursor.import_current().ok(),
         };
-        let grok_bot_active = if kind == ApplicationKind::Cursor {
+        let grok_bot_active = if matches!(kind, ApplicationKind::Cursor | ApplicationKind::Grok) {
             crate::grok_bot::active_slot()
         } else {
             None
@@ -312,17 +312,19 @@ impl Controller {
                     .is_some_and(|(active, saved)| {
                         crate::grok_bot::session_matches_active_slot(saved, active)
                     });
-                let (grok_bot_usage, grok_bot_reset_at) = if kind == ApplicationKind::Cursor {
-                    self.cursor_grok_bot_summary(&account)
-                } else {
-                    (None, None)
-                };
+                let (grok_bot_usage, grok_bot_reset_at) =
+                    if matches!(kind, ApplicationKind::Cursor | ApplicationKind::Grok) {
+                        self.cursor_grok_bot_summary(&account)
+                    } else {
+                        (None, None)
+                    };
                 AccountSummary {
                     is_current,
                     is_grok_bot_current,
                     id: account.id.clone(),
                     label: account.label.clone(),
                     email: account.email.clone(),
+                    application: kind,
                     import_type: account.import_type.clone(),
                     subscription: account.subscription.clone(),
                     usage: self
@@ -362,6 +364,29 @@ impl Controller {
                 }
             })
             .collect()
+    }
+
+
+    pub(crate) fn grok_bot_accounts(&self) -> Vec<AccountSummary> {
+        // Cursor: only non-free (Grok Bot needs a paid Cursor plan).
+        // Grok Build: show every imported account and badge its real tier (incl. Free).
+        let mut accounts = self
+            .accounts(ApplicationKind::Cursor)
+            .into_iter()
+            .filter(|account| {
+                !account
+                    .subscription
+                    .plan
+                    .as_deref()
+                    .is_some_and(|plan| plan.eq_ignore_ascii_case("free"))
+            })
+            .collect::<Vec<_>>();
+        accounts.extend(self.accounts(ApplicationKind::Grok));
+        accounts
+    }
+
+    pub(crate) fn grok_bot_launchable_accounts(&self) -> Vec<AccountSummary> {
+        self.grok_bot_accounts()
     }
 
     fn cursor_grok_bot_summary(
@@ -698,6 +723,140 @@ impl Controller {
                 serde_json::to_string(&usage.primary)?,
                 serde_json::to_string(&account.raw_export)?,
                 serde_json::to_string(&account.subscription)?,
+                now() as i64,
+                id
+            ],
+        )?;
+        Ok(())
+    }
+
+
+    pub(crate) fn saved_grok_usage(&self, id: &str) -> Result<Option<CursorUsageDetails>> {
+        let account = self.account(id)?;
+        if account.application != ApplicationKind::Grok {
+            return Err(AppError::ComingSoon);
+        }
+        let json: Option<String> = self.database.query_row(
+            "SELECT usage_json FROM accounts WHERE id=?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if let Some(json) = json {
+            if let Ok(details) = serde_json::from_str::<CursorUsageDetails>(&json) {
+                if details.account_id == id {
+                    return Ok(Some(details));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub(crate) fn save_grok_usage(
+        &mut self,
+        id: &str,
+        usage: CursorUsageDetails,
+        raw: serde_json::Value,
+    ) -> Result<()> {
+        if usage.account_id != id {
+            return Err(AppError::Message("用量数据与账号不匹配。".into()));
+        }
+        let mut account = self.account(id)?;
+        if account.application != ApplicationKind::Grok {
+            return Err(AppError::ComingSoon);
+        }
+        if let Some(reset_at) = usage.reset_at.clone() {
+            account.subscription.merge_from(SubscriptionSummary {
+                billing_cycle_end: Some(reset_at.clone()),
+                expires_at: crate::models::parse_iso_timestamp(&reset_at),
+                plan: usage
+                    .membership_type
+                    .clone()
+                    .or_else(|| account.subscription.plan.clone()),
+                checked_at: Some(usage.checked_at),
+            });
+        }
+        if let Some(obj) = account.raw_export.as_object_mut() {
+            obj.insert("grok_billing_raw".into(), raw);
+        }
+        self.database.execute(
+            "UPDATE accounts SET usage_json=?1, usage_summary_json=?2, raw_export_json=?3, subscription_json=?4, updated_at=?5 WHERE id=?6",
+            params![
+                serde_json::to_string(&usage)?,
+                serde_json::to_string(&usage.primary)?,
+                serde_json::to_string(&account.raw_export)?,
+                serde_json::to_string(&account.subscription)?,
+                now() as i64,
+                id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn save_grok_bot_usage(
+        &mut self,
+        id: &str,
+        grok_bot: Option<crate::models::UsageMetric>,
+        grok_bot_reset_at: Option<String>,
+        sand_raw: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let account = self.account(id)?;
+        let existing: Option<String> = self
+            .database
+            .query_row(
+                "SELECT usage_json FROM accounts WHERE id=?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        let mut details = existing
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<CursorUsageDetails>(json).ok())
+            .filter(|details| details.account_id == id)
+            .unwrap_or(CursorUsageDetails {
+                account_id: id.into(),
+                label: account.label.clone(),
+                email: account.email.clone(),
+                name: None,
+                membership_type: account.subscription.plan.clone(),
+                primary: crate::models::UsageMetric {
+                    kind: "percent".into(),
+                    used: 0.0,
+                    limit: None,
+                    percent: 0.0,
+                },
+                reset_at: account.subscription.billing_cycle_end.clone(),
+                on_demand: None,
+                grok_bot: None,
+                grok_bot_reset_at: None,
+                models: vec![],
+                weekly_available: false,
+                weekly: vec![],
+                weekly_error: None,
+                events: vec![],
+                checked_at: now(),
+            });
+        details.grok_bot = grok_bot;
+        details.grok_bot_reset_at = grok_bot_reset_at;
+        details.checked_at = now();
+        let mut raw_export = account.raw_export;
+        if let Some(sand) = sand_raw {
+            match raw_export.get_mut("cursor_usage_raw") {
+                Some(raw) => {
+                    if let Some(obj) = raw.as_object_mut() {
+                        obj.insert("grok_bot_usage".into(), sand);
+                    }
+                }
+                None => {
+                    raw_export["cursor_usage_raw"] = serde_json::json!({ "grok_bot_usage": sand });
+                }
+            }
+        }
+        self.database.execute(
+            "UPDATE accounts SET usage_json=?1, raw_export_json=?2, updated_at=?3 WHERE id=?4",
+            params![
+                serde_json::to_string(&details)?,
+                serde_json::to_string(&raw_export)?,
                 now() as i64,
                 id
             ],

@@ -1,53 +1,199 @@
-import { Check, CircleAlert, LoaderCircle, Zap } from "lucide-react";
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { Check, ChevronDown, CircleAlert, ExternalLink, LoaderCircle, RefreshCw, Zap } from "lucide-react";
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
-import type { GrokBotStatus } from "../../../lib/types";
-import { grokBotAvailabilityLabel, grokBotSignInLabel } from "../lib/grokBotStatus";
+import { openExternalUrl } from "../../../lib/api";
+import type { Account, GrokBotStatus } from "../../../lib/types";
+import { canLaunchGrokBot, grokBotUsageLabel } from "../lib/accountPresentation";
 import styles from "../page.module.css";
+
+const GROK_BOT_WEBSITE = "https://cursor.com/download/bot";
 
 export function GrokBotStatusCard({
   status,
   loading,
+  accounts,
+  busy,
+  onSwitchAccount,
+  onRefresh,
+  refreshing,
+  onError,
 }: {
   status?: GrokBotStatus;
   loading?: boolean;
+  accounts: Account[];
+  busy?: boolean;
+  onSwitchAccount: (account: Account) => void;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+  onError?: (error: unknown) => void;
 }) {
   const { t } = useTranslation();
+  const [websiteOpen, setWebsiteOpen] = useState(false);
+  const [openingWebsite, setOpeningWebsite] = useState(false);
+  const botAccounts = useMemo(
+    () => accounts.filter(canLaunchGrokBot),
+    [accounts],
+  );
+  const currentAccount = useMemo(() => {
+    if (status?.currentAccountId) {
+      return (
+        botAccounts.find((account) => account.id === status.currentAccountId) ??
+        accounts.find((account) => account.id === status.currentAccountId)
+      );
+    }
+    return (
+      botAccounts.find((account) => account.isGrokBotCurrent) ??
+      accounts.find((account) => account.isGrokBotCurrent)
+    );
+  }, [accounts, botAccounts, status?.currentAccountId]);
+  const usage = currentAccount ? grokBotUsageLabel(currentAccount, t) : undefined;
+  const installed = Boolean(status?.installed);
+
+  const confirmOpenWebsite = async () => {
+    setOpeningWebsite(true);
+    try {
+      await openExternalUrl(GROK_BOT_WEBSITE);
+      setWebsiteOpen(false);
+    } catch (error) {
+      onError?.(error);
+    } finally {
+      setOpeningWebsite(false);
+    }
+  };
+
   return (
-    <article className={styles.grokBotStatus}>
-      <img alt="" className={styles.grokBotStatusIcon} src={grokBotIcon} />
-      <div className={styles.grokBotStatusCopy}>
-        <strong>{t("grokBot")}</strong>
-        <div className={styles.accountMeta}>
-          {loading && !status ? (
-            <span className={styles.metaBadge}>
-              <LoaderCircle aria-hidden="true" className={styles.spinning} size={11} />
-              {t("grokBotStatusLoading")}
-            </span>
-          ) : status ? (
-            <>
-              <span className={`${styles.metaBadge} ${status.available ? styles.grokBotReadyBadge : styles.grokBotUnavailableBadge}`}>
-                {status.available ? <Check aria-hidden="true" size={11} /> : <CircleAlert aria-hidden="true" size={11} />}
-                {grokBotAvailabilityLabel(status, t)}
+    <>
+      <article className={styles.grokBotStatus}>
+        <img alt="" className={styles.grokBotStatusIcon} src={grokBotIcon} />
+        <div className={styles.grokBotStatusCopy}>
+          <div className={styles.grokBotStatusTitleRow}>
+            <strong>{t("grokBotClientLabel")}</strong>
+            <button
+              aria-label={t("grokBotOpenWebsite")}
+              className={styles.grokBotTitleLinkButton}
+              onClick={() => setWebsiteOpen(true)}
+              type="button"
+            >
+              <ExternalLink aria-hidden="true" size={14} />
+            </button>
+          </div>
+          <div className={styles.grokBotStatusMeta}>
+            {loading && !status ? (
+              <span className={styles.metaBadge}>
+                <LoaderCircle aria-hidden="true" className={styles.spinning} size={11} />
+                {t("grokBotStatusLoading")}
               </span>
-              <span className={styles.metaBadge}>{grokBotSignInLabel(status, t)}</span>
-              {status.installed && (
-                <span className={styles.metaBadge}>
-                  {status.running ? t("grokBotRunning") : t("grokBotNotRunning")}
+            ) : status ? (
+              <>
+                <span className={`${styles.metaBadge} ${installed ? styles.grokBotReadyBadge : styles.grokBotUnavailableBadge}`}>
+                  {installed ? <Check aria-hidden="true" size={11} /> : <CircleAlert aria-hidden="true" size={11} />}
+                  {installed ? t("grokBotClientInstalled") : t("grokBotClientNotInstalled")}
                 </span>
-              )}
-              {status.currentAccountLabel && (
-                <span className={`${styles.metaBadge} ${styles.grokBotCurrentAccountBadge}`}>
-                  <Zap aria-hidden="true" size={11} strokeWidth={2.4} />
-                  {status.currentAccountLabel}
+                {(currentAccount?.label || status.currentAccountLabel) && (
+                  <span className={`${styles.metaBadge} ${styles.grokBotCurrentAccountBadge}`}>
+                    <Zap aria-hidden="true" size={11} strokeWidth={2.4} />
+                    {currentAccount?.label ?? status.currentAccountLabel}
+                  </span>
+                )}
+                <span className={`${styles.metaBadge} ${styles.grokBotUsageBadge}`}>
+                  {usage ?? t("grokBotUsageUnknown")}
                 </span>
-              )}
-            </>
-          ) : (
-            <span className={styles.metaBadge}>{t("grokBotUnavailable")}</span>
-          )}
+              </>
+            ) : (
+              <span className={styles.metaBadge}>{t("grokBotUnavailable")}</span>
+            )}
+          </div>
         </div>
-      </div>
-    </article>
+        <div className={styles.grokBotStatusActions}>
+          <button
+            aria-label={t("refreshGrokBot")}
+            className={styles.iconButton}
+            disabled={busy || refreshing || !onRefresh}
+            onClick={() => onRefresh?.()}
+            type="button"
+          >
+            <RefreshCw aria-hidden="true" className={refreshing ? styles.spinning : undefined} size={16} />
+          </button>
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger asChild>
+            <button
+              aria-label={t("switch")}
+              className={styles.grokBotAccountSwitch}
+              disabled={busy}
+              type="button"
+            >
+              <span className={styles.grokBotAccountSwitchLabel}>{t("switch")}</span>
+              <ChevronDown aria-hidden="true" size={14} />
+            </button>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content align="end" className={styles.grokBotAccountMenu} sideOffset={6}>
+              {botAccounts.length === 0 ? (
+                <div className={styles.grokBotAccountMenuEmpty}>{t("grokBotNoEligibleAccounts")}</div>
+              ) : (
+                botAccounts.map((account) => {
+                  const accountUsage = grokBotUsageLabel(account, t) ?? t("grokBotUsageUnknown");
+                  const isCurrent =
+                    account.id === currentAccount?.id || Boolean(account.isGrokBotCurrent);
+                  return (
+                    <DropdownMenu.Item
+                      className={styles.grokBotAccountMenuItem}
+                      disabled={busy}
+                      key={account.id}
+                      onSelect={() => onSwitchAccount(account)}
+                    >
+                      <div className={styles.grokBotAccountMenuItemTop}>
+                        <span className={styles.grokBotAccountMenuItemName}>{account.label}</span>
+                        {isCurrent && <Check aria-hidden="true" size={14} />}
+                      </div>
+                      <span className={styles.grokBotAccountMenuItemMeta}>
+                        {account.email ? `${account.email} · ${accountUsage}` : accountUsage}
+                      </span>
+                    </DropdownMenu.Item>
+                  );
+                })
+              )}
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+        </div>
+      </article>
+
+      <AlertDialog.Root onOpenChange={setWebsiteOpen} open={websiteOpen}>
+        <AlertDialog.Portal>
+          <AlertDialog.Overlay className={styles.dialogOverlay} />
+          <AlertDialog.Content className={styles.dialogContent}>
+            <AlertDialog.Title>{t("grokBotOpenWebsiteTitle")}</AlertDialog.Title>
+            <AlertDialog.Description>
+              {t("grokBotOpenWebsiteDescription", { url: GROK_BOT_WEBSITE })}
+            </AlertDialog.Description>
+            <div className={styles.dialogActions}>
+              <AlertDialog.Cancel asChild>
+                <button className={styles.dialogCancel} disabled={openingWebsite} type="button">
+                  {t("cancel")}
+                </button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action asChild>
+                <button
+                  autoFocus
+                  className={styles.dialogPrimary}
+                  disabled={openingWebsite}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void confirmOpenWebsite();
+                  }}
+                  type="button"
+                >
+                  {openingWebsite ? t("grokBotStatusLoading") : t("grokBotOpenWebsiteConfirm")}
+                </button>
+              </AlertDialog.Action>
+            </div>
+          </AlertDialog.Content>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
+    </>
   );
 }

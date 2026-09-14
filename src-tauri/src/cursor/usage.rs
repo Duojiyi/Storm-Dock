@@ -731,6 +731,25 @@ pub(crate) fn cursor_usage_from_snapshot(
     })
 }
 
+pub(crate) fn fetch_grok_bot_quota_fast(
+    session: &Session,
+) -> Result<(
+    crate::models::SubscriptionSummary,
+    Option<(crate::models::UsageMetric, Option<String>)>,
+    Option<serde_json::Value>,
+)> {
+    let summary = crate::cursor::api::fetch_cursor_subscription_fast(session)?;
+    let cookie = crate::cursor::api::dashboard_cookie(session)?;
+    let sand = crate::cursor::api::dashboard_request(
+        &cookie,
+        "/dashboard/get-sand-usage-status",
+        Some(serde_json::json!({})),
+    )
+    .ok();
+    let grok = sand.as_ref().and_then(grok_bot_usage);
+    Ok((summary, grok, sand))
+}
+
 pub(crate) fn fetch_cursor_usage(
     account: &Account,
     session: &Session,
