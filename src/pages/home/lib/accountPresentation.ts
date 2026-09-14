@@ -2,6 +2,17 @@ import type { Account } from "../../../lib/types";
 
 export type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+export function subscriptionPlanBadge(account: Account, t: Translate) {
+  const raw = account.subscription.plan?.toLowerCase();
+  // Grok Build API returns null tier for Free; avoid "未知订阅" before/without refresh.
+  const plan = raw || (account.application === "grok" ? "free" : undefined);
+  if (!plan) return { name: t("subscriptionUnknownPlan"), plan: "unknown" };
+  return {
+    name: t(`subscriptionPlans.${plan}`, { defaultValue: account.subscription.plan ?? plan }),
+    plan,
+  };
+}
+
 export function subscriptionLabel(account: Account, t: Translate) {
   const plan = account.subscription.plan;
   if (!plan) return undefined;
@@ -47,6 +58,25 @@ export function grokBotResetLabel(resetAt: string | undefined, t: Translate) {
   if (days > 0) return t("grokBotResetDays", { count: days });
   if (days === 0) return t("grokBotResetToday");
   return t("grokBotResetPassed");
+}
+
+
+export function isGrokBotFreePlan(account: Account) {
+  return account.subscription.plan?.toLowerCase() === "free";
+}
+
+/** Cursor paid + any Grok Build account may launch Grok Bot. */
+export function canLaunchGrokBot(account: Account) {
+  if (account.application === "grok") return true;
+  if (isGrokBotFreePlan(account)) return false;
+  if (account.application && account.application !== "cursor" && account.application !== "grok") {
+    return false;
+  }
+  return true;
+}
+
+export function grokBotSourceKey(account: Account) {
+  return account.application === "grok" ? "grok" : "cursor";
 }
 
 export function grokBotUsageLabel(account: Account, t: Translate) {

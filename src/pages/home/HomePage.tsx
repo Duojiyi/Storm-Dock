@@ -72,6 +72,7 @@ import logo from "../../assets/logo.svg";
 import codexIcon from "../../assets/codex.svg";
 import cursorIcon from "../../assets/cursor.svg";
 import grokIcon from "../../assets/tools/grok.svg";
+import grokBotIcon from "../../assets/tools/grok-bot.png";
 import "../../i18n";
 import {
   deleteCodexPlugin,
@@ -85,10 +86,15 @@ import {
   deleteGrokSessions,
   getCodexSessionMessages,
   getCursorSessionMessages,
+  getCursorUsage,
+  getGrokBotStatus,
   getGrokSessionMessages,
   launchCodexSession,
   launchGrokSession,
   listAccounts,
+  getGrokBotExportRecord,
+  listGrokBotAccounts,
+  refreshGrokBotAccounts,
   listApplications,
   listCodexPlugins,
   listCodexSessions,
@@ -105,6 +111,7 @@ import {
 } from "../../lib/api";
 import {
   APPLICATION_KINDS,
+  isGrokBotHomeView,
   applicationKindFromQuery,
   canSwitchToDesktop,
   homePath,
@@ -113,12 +120,14 @@ import {
   type ApplicationKind,
   type ApplicationStatus,
   type CodexSession,
+  type GrokBotStatus,
   type CodexSessionMessage,
   type McpServer,
 } from "../../lib/types";
 import "../../styles/global.css";
 import styles from "./page.module.css";
 import {
+  canLaunchGrokBot,
   subscriptionLabel,
   usageLabel,
 } from "./lib/accountPresentation";
@@ -132,7 +141,10 @@ import {
 import { useLatestRequest } from "./hooks/useLatestRequest";
 import { WorkspaceToolbar } from "./components/WorkspaceToolbar";
 import { AccountList } from "./components/AccountList";
+import { GrokBotAccountList } from "./components/GrokBotAccountList";
+import { GrokBotStatusCard } from "./components/GrokBotStatusCard";
 import { SessionWorkspace, type SessionProvider } from "./components/SessionWorkspace";
+import { GrokBotSessionWorkspace } from "./components/GrokBotSessionWorkspace";
 import { shouldApplySwitchProgress } from "./lib/switchProgress";
 import type { WorkspaceSection, SwitchProgress } from "./types";
 
@@ -145,11 +157,13 @@ const APP_ICONS: Record<ApplicationKind, string> = {
 
 const workspaceSections: Array<{
   id: WorkspaceSection;
-  icon: ComponentType<{
+  icon?: ComponentType<{
     "aria-hidden"?: boolean | "true" | "false";
     size?: number;
   }>;
+  image?: string;
   labelKey: string;
+  cursorOnly?: boolean;
 }> = [
   { id: "accounts", icon: UserRound, labelKey: "accounts" },
   { id: "sessions", icon: MessageSquareText, labelKey: "sessions" },
@@ -493,6 +507,7 @@ export function HomePage() {
   const { t } = useTranslation();
   const [applications, setApplications] = useState<ApplicationStatus[]>([]);
   const [selected, setSelected] = useState<ApplicationKind>(applicationKindFromQuery);
+  const [grokBotMode, setGrokBotMode] = useState(isGrokBotHomeView);
   const [workspaceSection, setWorkspaceSection] =
     useState<WorkspaceSection>("accounts");
   const [pluginsExpanded, setPluginsExpanded] = useState(false);
@@ -524,6 +539,8 @@ export function HomePage() {
   >();
   const [sessionsDeleting, setSessionsDeleting] = useState(false);
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
+  const [grokBotStatus, setGrokBotStatus] = useState<GrokBotStatus>();
+  const [grokBotStatusLoading, setGrokBotStatusLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
@@ -539,6 +556,7 @@ export function HomePage() {
   const [grokBotDialog, setGrokBotDialog] = useState<Account>();
   const [exportData, setExportData] = useState<unknown>();
   const [exportTarget, setExportTarget] = useState<Account>();
+  const [exportKind, setExportKind] = useState<"account" | "grokBot">("account");
   const [testingId, setTestingId] = useState<string>();
   const [countdown, setCountdown] = useState(10);
   const activeOperationId = useRef<string | undefined>(undefined);
@@ -564,22 +582,34 @@ export function HomePage() {
     const isCurrent = beginAccountsRequest();
     const [nextApplications, nextAccounts] = await Promise.all([
       listApplications(),
-      listAccounts(selected),
+      grokBotMode ? listGrokBotAccounts() : listAccounts(selected),
     ]);
     if (!isCurrent()) return;
     setApplications(nextApplications);
     setAccounts(nextAccounts);
-  }, [beginAccountsRequest, selected]);
+  }, [beginAccountsRequest, grokBotMode, selected]);
   const selectApplication = (next: ApplicationKind) => {
+    // Grok Bot keeps selected="cursor". Leaving it must not clear accounts or
+    // skip reload — selected does not change, so loadAccounts would not re-run.
     if (next === selected) {
+      setGrokBotMode(false);
+      if (workspaceSection === "grokBot") setWorkspaceSection("accounts");
       window.history.replaceState({}, "", homePath(next));
       return;
     }
+    setGrokBotMode(false);
     setMcpServers([]);
     setMcpPending(new Set());
     setAccounts([]);
     setSelected(next);
+    if (workspaceSection === "grokBot") setWorkspaceSection("accounts");
     window.history.replaceState({}, "", homePath(next));
+  };
+  const openGrokBotMode = () => {
+    setGrokBotMode(true);
+    setSelected("cursor");
+    setWorkspaceSection("accounts");
+    window.history.replaceState({}, "", homePath("grokBot"));
   };
   useEffect(() => {
     void loadAccounts().catch(showError);
@@ -588,6 +618,53 @@ export function HomePage() {
     if (workspaceSection === "mcp")
       void listMcpServers(selected).then(setMcpServers).catch(showError);
   }, [selected, workspaceSection]);
+  useEffect(() => {
+    if (grokBotMode) {
+      if (workspaceSection !== "accounts" && workspaceSection !== "sessions")
+        setWorkspaceSection("accounts");
+      return;
+    }
+    if (selected !== "cursor" && workspaceSection === "grokBot")
+      setWorkspaceSection("accounts");
+  }, [grokBotMode, selected, workspaceSection]);
+  const loadGrokBotStatus = useCallback(async () => {
+    if (selected !== "cursor") {
+      setGrokBotStatus(undefined);
+      return;
+    }
+    setGrokBotStatusLoading(true);
+    try {
+      setGrokBotStatus(await getGrokBotStatus());
+    } catch (error) {
+      showError(error);
+    } finally {
+      setGrokBotStatusLoading(false);
+    }
+  }, [selected, showError]);
+  useEffect(() => {
+    void loadGrokBotStatus();
+  }, [loadGrokBotStatus, sessionRefreshKey]);
+  const refreshGrokBotPage = useCallback(async () => {
+    setGrokBotStatusLoading(true);
+    try {
+      const currentId =
+        grokBotStatus?.currentAccountId ??
+        accounts.find((account) => account.isGrokBotCurrent)?.id;
+      if (currentId) {
+        setNotice(t("refreshGrokBotUsage"));
+        await getCursorUsage(currentId);
+        await loadAccounts();
+        setNotice(t("refreshGrokBotDone"));
+      } else {
+        setNotice(t("refreshGrokBotNoAccount"));
+      }
+      setSessionRefreshKey((current) => current + 1);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setGrokBotStatusLoading(false);
+    }
+  }, [accounts, grokBotStatus?.currentAccountId, loadAccounts, showError, t]);
   const loadCodexSessions = useCallback(async () => {
     setSessionsRefreshing(true);
     try {
@@ -838,7 +915,7 @@ export function HomePage() {
     setRefreshFailed(false);
     setNotice(t("refreshing"));
     try {
-      if (!selected || selected === "grok") {
+      if (!selected) {
         await loadAccounts();
         setNotice(t("refreshed"));
         return;
@@ -851,7 +928,9 @@ export function HomePage() {
       }>(
         selected === "cursor"
           ? "refresh_all_cursor_accounts"
-          : "refresh_all_codex_accounts",
+          : selected === "grok"
+            ? "refresh_all_grok_accounts"
+            : "refresh_all_codex_accounts",
       );
       const failed = result.failed;
       await loadAccounts();
@@ -860,6 +939,36 @@ export function HomePage() {
         result.invalid && t("refreshTokenInvalid", { count: result.invalid }),
         result.missing &&
           t("refreshCredentialMissing", { count: result.missing }),
+        other && t("refreshOtherFailed", { count: other }),
+      ]
+        .filter(Boolean)
+        .join("，");
+      setNotice(
+        failed
+          ? t("subscriptionsRefreshIncomplete", { reasons })
+          : t(accounts.length ? "subscriptionsRefreshed" : "refreshed"),
+      );
+    } catch (error) {
+      setRefreshFailed(true);
+      showError(error);
+    } finally {
+      setBusy(false);
+      setRefreshing(false);
+    }
+  };
+  const refreshGrokBotAccountQuotas = async () => {
+    setBusy(true);
+    setRefreshing(true);
+    setRefreshFailed(false);
+    setNotice(t("refreshing"));
+    try {
+      const result = await refreshGrokBotAccounts();
+      const failed = result.failed;
+      await loadAccounts();
+      const other = failed - result.invalid - result.missing;
+      const reasons = [
+        result.invalid && t("refreshTokenInvalid", { count: result.invalid }),
+        result.missing && t("refreshCredentialMissing", { count: result.missing }),
         other && t("refreshOtherFailed", { count: other }),
       ]
         .filter(Boolean)
@@ -917,6 +1026,16 @@ export function HomePage() {
         await invoke<unknown>("get_cursor_export_record", { id: account.id }),
       );
       setExportTarget(account);
+      setExportKind("account");
+    } catch (error) {
+      showError(error);
+    }
+  };
+  const openGrokBotExport = async (account: Account) => {
+    try {
+      setExportData(await getGrokBotExportRecord(account.id));
+      setExportTarget(account);
+      setExportKind("grokBot");
     } catch (error) {
       showError(error);
     }
@@ -1109,462 +1228,31 @@ export function HomePage() {
             <p>{t("mcpDescription")}</p>
           </div>
         );
-      if (workspaceSection === "sessions")
-        return <SessionWorkspace key={sessionProvider.id} onError={showError} onNotice={setNotice} onRefreshingChange={setSessionsRefreshing} provider={sessionProvider} refreshKey={sessionRefreshKey} />;
       if (workspaceSection === "sessions") {
-        if (sessionsRefreshing && codexSessions.length === 0)
+        if (grokBotMode) {
           return (
-            <div className={styles.empty}>
-              <RefreshCw
-                aria-hidden="true"
-                className={styles.spinning}
-                size={32}
-              />
-              <h2>{t("sessionsLoading")}</h2>
-            </div>
+            <GrokBotSessionWorkspace
+              header={
+                <GrokBotStatusCard
+                  accounts={accounts}
+                  busy={busy}
+                  loading={grokBotStatusLoading}
+                  onError={showError}
+                  onRefresh={() => void refreshGrokBotPage()}
+                  onSwitchAccount={(account) => void launchBot(account)}
+                  refreshing={grokBotStatusLoading || sessionsRefreshing}
+                  status={grokBotStatus}
+                />
+              }
+              key="grokBot-sessions"
+              onError={showError}
+              onNotice={setNotice}
+              onRefreshingChange={setSessionsRefreshing}
+              refreshKey={sessionRefreshKey}
+            />
           );
-        if (codexSessions.length === 0)
-          return (
-            <div className={styles.empty}>
-              <MessageSquareText aria-hidden="true" size={32} />
-              <h2>{t("sessionsEmptyTitle")}</h2>
-              <p>{t("sessionsEmptyDescription")}</p>
-            </div>
-          );
-        const visibleSessions = visibleCodexSessions;
-        const projects = sessionProjects;
-        const selectedSession = codexSessions.find(
-          (session) => session.id === selectedCodexSessionId,
-        );
-        const toggleAllVisible = () =>
-          setSelectedSessionIds((current) =>
-            toggleSelectedIds(current, visibleSessions.map((session) => session.id)),
-          );
-        const deleteSelectedSessions = async () => {
-          const targets = sessionDeleteTargets ?? [];
-          if (!targets.length || sessionsDeleting) return;
-          setSessionsDeleting(true);
-          setNotice(undefined);
-          const results = await Promise.allSettled(
-            targets.map((id) => deleteCodexSession(id)),
-          );
-          const deletedIds = new Set(
-            targets.filter((_, index) => results[index].status === "fulfilled"),
-          );
-          const failedCount = targets.length - deletedIds.size;
-          if (deletedIds.size) {
-            setCodexSessions((current) =>
-              current.filter((session) => !deletedIds.has(session.id)),
-            );
-            setSelectedSessionIds((current) => removeSelectedIds(current, deletedIds));
-            if (
-              selectedCodexSessionId &&
-              deletedIds.has(selectedCodexSessionId)
-            )
-              setSelectedCodexSessionId(undefined);
-          }
-          setSessionDeleteTargets(undefined);
-          setSessionsDeleting(false);
-          if (failedCount)
-            showError(t("sessionsBatchDeleteFailed", { count: failedCount }));
-          else setNotice(t("sessionsBatchDeleted", { count: deletedIds.size }));
-        };
-        return (
-          <>
-            <div className={styles.sessionsLayout}>
-              <div className={styles.sessionPane}>
-                <header className={styles.sessionToolbar}>
-                  {sessionSearchOpen ? (
-                    <div className={styles.sessionSearch}>
-                      <Search aria-hidden="true" size={15} />
-                      <input
-                        autoFocus
-                        onChange={(event) =>
-                          setSessionSearch(event.target.value)
-                        }
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") {
-                            setSessionSearch("");
-                            setSessionSearchOpen(false);
-                          }
-                        }}
-                        placeholder={t("searchSessions")}
-                        value={sessionSearch}
-                      />
-                      <button
-                        aria-label={t("close")}
-                        onClick={() => {
-                          setSessionSearch("");
-                          setSessionSearchOpen(false);
-                        }}
-                        type="button"
-                      >
-                        <X aria-hidden="true" size={15} />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className={styles.sessionToolbarTitle}>
-                        <strong>{t("sessionsTitle")}</strong>
-                        <span>{visibleSessions.length}</span>
-                      </div>
-                      <div className={styles.sessionToolbarActions}>
-                        <Tooltip content={t("collapseSessionProjects")}>
-                          <button
-                            aria-label={t("collapseSessionProjects")}
-                            onClick={() =>
-                              setExpandedSessionProjects(new Set())
-                            }
-                            type="button"
-                          >
-                            <ChevronsDownUp aria-hidden="true" size={16} />
-                          </button>
-                        </Tooltip>
-                        {selected === "codex" && <Tooltip
-                          content={sessionSelectionMode ? t("exitSessionBatch") : t("manageSessionBatch")}
-                        >
-                          <button
-                            aria-pressed={sessionSelectionMode}
-                            className={
-                              sessionSelectionMode
-                                ? styles.sessionToolbarActive
-                                : undefined
-                            }
-                            onClick={() =>
-                              setSessionSelectionMode((active) => !active)
-                            }
-                            type="button"
-                          >
-                            <CheckSquare aria-hidden="true" size={16} />
-                          </button>
-                        </Tooltip>}
-                        <Tooltip content={t("searchSessions")}>
-                          <button
-                            onClick={() => setSessionSearchOpen(true)}
-                            type="button"
-                          >
-                            <Search aria-hidden="true" size={16} />
-                          </button>
-                        </Tooltip>
-                      </div>
-                    </>
-                  )}
-                </header>
-                {selected === "codex" && sessionSelectionMode && (
-                  <div className={styles.sessionBatchBar}>
-                    <span>
-                      {t("sessionsSelected", {
-                        count: selectedSessionIds.size,
-                      })}
-                    </span>
-                    <button onClick={toggleAllVisible} type="button">
-                      {visibleSessions.every((session) =>
-                        selectedSessionIds.has(session.id),
-                      )
-                        ? t("sessionsClearAll")
-                        : t("sessionsSelectAll")}
-                    </button>
-                    <button
-                      onClick={() => setSelectedSessionIds(new Set())}
-                      type="button"
-                    >
-                      {t("sessionsClearSelection")}
-                    </button>
-                    <button
-                      className={styles.sessionBatchDelete}
-                      disabled={!selectedSessionIds.size || sessionsDeleting}
-                      onClick={() =>
-                        setSessionDeleteTargets([...selectedSessionIds])
-                      }
-                      type="button"
-                    >
-                      <Trash2 aria-hidden="true" size={14} />
-                      {sessionsDeleting
-                        ? t("sessionsDeleting")
-                        : t("sessionsDeleteSelected")}
-                    </button>
-                  </div>
-                )}
-                <div className={styles.sessionProjects}>
-                  {[...projects].map(([project, sessions]) => {
-                    const expanded = expandedSessionProjects.has(project);
-                    const allProjectSessionsSelected = sessions.every((session) =>
-                      selectedSessionIds.has(session.id),
-                    );
-                    const label =
-                      project === "__unknown__"
-                        ? t("sessionsUnknownProject")
-                        : (project.split("/").filter(Boolean).at(-1) ??
-                          project);
-                    return (
-                      <section className={styles.sessionProject} key={project}>
-                        <div className={styles.sessionProjectHeader}>
-                          {selected === "codex" && sessionSelectionMode && (
-                            <input
-                              aria-label={t("selectSessionProject", { project: label })}
-                              checked={allProjectSessionsSelected}
-                              onChange={(event) =>
-                                setSelectedSessionIds((current) => {
-                                  const next = new Set(current);
-                                  sessions.forEach((session) => {
-                                    if (event.target.checked) next.add(session.id);
-                                    else next.delete(session.id);
-                                  });
-                                  return next;
-                                })
-                              }
-                              type="checkbox"
-                            />
-                          )}
-                          <button
-                            aria-expanded={expanded}
-                            aria-label={t("toggleSessionProject", {
-                              project: label,
-                            })}
-                            className={styles.sessionProjectTrigger}
-                            onClick={() =>
-                              setExpandedSessionProjects((current) => {
-                                const next = new Set(current);
-                                if (next.has(project)) next.delete(project);
-                                else next.add(project);
-                                return next;
-                              })
-                            }
-                            type="button"
-                          >
-                            {expanded ? (
-                              <ChevronDown aria-hidden="true" size={15} />
-                            ) : (
-                              <ChevronRight aria-hidden="true" size={15} />
-                            )}
-                            <FolderOpen aria-hidden="true" size={16} />
-                            <span>{label}</span>
-                            <small className={styles.sessionProjectCount}>
-                              {sessions.length}
-                            </small>
-                          </button>
-                        </div>
-                        {expanded && (
-                          <div className={styles.sessionList}>
-                            {sessions.map((session) => (
-                              <div
-                                className={`${styles.sessionCard} ${session.id === selectedCodexSessionId ? styles.sessionCardActive : ""}`}
-                                key={session.id}
-                              >
-                                {selected === "codex" && sessionSelectionMode && (
-                                  <input
-                                    aria-label={t("selectSession", {
-                                      session: session.title,
-                                    })}
-                                    checked={selectedSessionIds.has(session.id)}
-                                    onChange={(event) =>
-                                      setSelectedSessionIds((current) => {
-                                        const next = new Set(current);
-                                        if (event.target.checked)
-                                          next.add(session.id);
-                                        else next.delete(session.id);
-                                        return next;
-                                      })
-                                    }
-                                    type="checkbox"
-                                  />
-                                )}
-                                <button
-                                  aria-current={
-                                    session.id === selectedCodexSessionId
-                                      ? "page"
-                                      : undefined
-                                  }
-                                  onClick={() =>
-                                    setSelectedCodexSessionId(session.id)
-                                  }
-                                  type="button"
-                                >
-                                  <strong>{session.title}</strong>
-                                  <span>
-                                    {formatRelativeSessionTime(
-                                      session.updatedAt,
-                                      t,
-                                    )}
-                                  </span>
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
-              </div>
-              <section className={styles.sessionDetail}>
-                {!selectedSession ? (
-                  <div className={styles.sessionDetailEmpty}>
-                    <MessageSquareText aria-hidden="true" size={32} />
-                    <p>{t("sessionsSelect")}</p>
-                  </div>
-                ) : (
-                  <>
-                    <header className={styles.sessionDetailHeader}>
-                      <div className={styles.sessionDetailTop}>
-                        <h2>{selectedSession.title}</h2>
-                        <div className={styles.sessionDetailActions}>
-                          {selected === "codex" && <Tooltip content={t("launchSession")}>
-                            <button
-                              aria-label={t("launchSession")}
-                              onClick={() =>
-                                void launchCodexSession(selectedSession.id)
-                              }
-                              type="button"
-                            >
-                              <Play aria-hidden="true" size={17} />
-                            </button>
-                          </Tooltip>}
-                          {selected === "codex" && <Tooltip content={t("deleteSession")}>
-                            <button
-                              aria-label={t("deleteSession")}
-                              onClick={() => {
-                                if (window.confirm(t("deleteSessionConfirm")))
-                                  void deleteCodexSession(
-                                    selectedSession.id,
-                                  ).then(() => {
-                                    setCodexSessions((current) =>
-                                      current.filter(
-                                        (session) =>
-                                          session.id !== selectedSession.id,
-                                      ),
-                                    );
-                                    setSelectedCodexSessionId(undefined);
-                                  });
-                              }}
-                              type="button"
-                            >
-                              <Trash2 aria-hidden="true" size={17} />
-                            </button>
-                          </Tooltip>}
-                        </div>
-                      </div>
-                      <div className={styles.sessionDetailMeta}>
-                        <Clock3 aria-hidden="true" size={13} />
-                        <span>
-                          {new Date(selectedSession.updatedAt).toLocaleString()}
-                        </span>
-                        {selectedSession.projectDir && (
-                          <>
-                            <FolderOpen aria-hidden="true" size={13} />
-                            <span>
-                              {selectedSession.projectDir
-                                .split("/")
-                                .filter(Boolean)
-                                .at(-1)}
-                            </span>
-                          </>
-                        )}
-                      </div>
-                      <dl className={styles.sessionDetailFields}>
-                        <div>
-                          <dt>{t("sessionsSourcePath")}</dt>
-                          <dd><code>{selectedSession.sourcePath}</code><CopyIconButton onCopied={() => setNotice(t("copied"))} onError={showError} text={selectedSession.sourcePath} /></dd>
-                        </div>
-                        {selected === "codex" && <div>
-                          <dt>{t("sessionsResumeCommand")}</dt>
-                          <dd><code>{`codex resume ${selectedSession.id}`}</code><CopyIconButton onCopied={() => setNotice(t("copied"))} onError={showError} text={`codex resume ${selectedSession.id}`} /></dd>
-                        </div>}
-                      </dl>
-                    </header>
-                    <div className={styles.sessionMessages}>
-                      {sessionMessagesLoading ? (
-                        <div className={styles.sessionDetailEmpty}>
-                          <RefreshCw
-                            aria-hidden="true"
-                            className={styles.spinning}
-                            size={24}
-                          />
-                          <p>{t("sessionsMessagesLoading")}</p>
-                        </div>
-                      ) : codexSessionMessages.length ? (
-                        codexSessionMessages.map((message, index) => (
-                          <article
-                            className={`${styles.sessionMessage} ${message.role === "user" ? styles.sessionMessageUser : styles.sessionMessageAssistant}`}
-                            key={`${message.timestamp ?? index}-${index}`}
-                          >
-                            <header>
-                              <strong>
-                                {t(
-                                  message.role === "user"
-                                    ? "sessionsRoleUser"
-                                    : "sessionsRoleAssistant",
-                                )}
-                              </strong>
-                              {message.timestamp && (
-                                <time>
-                                  {new Date(message.timestamp).toLocaleString()}
-                                </time>
-                              )}
-                            </header>
-                            <p>{message.content}</p>
-                          </article>
-                        ))
-                      ) : (
-                        <div className={styles.sessionDetailEmpty}>
-                          <p>{t("sessionsMessagesEmpty")}</p>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-              </section>
-            </div>
-            <AlertDialog.Root
-              onOpenChange={(open) => {
-                if (!open && !sessionsDeleting)
-                  setSessionDeleteTargets(undefined);
-              }}
-              open={Boolean(sessionDeleteTargets)}
-            >
-              <AlertDialog.Portal>
-                <AlertDialog.Overlay className={styles.dialogOverlay} />
-                <AlertDialog.Content className={styles.dialogContent}>
-                  <AlertDialog.Title>
-                    {t("sessionsBatchDeleteTitle")}
-                  </AlertDialog.Title>
-                  <AlertDialog.Description>
-                    {t("sessionsBatchDeleteConfirm", {
-                      count: sessionDeleteTargets?.length ?? 0,
-                    })}
-                  </AlertDialog.Description>
-                  <div className={styles.dialogActions}>
-                    <AlertDialog.Cancel asChild>
-                      <button
-                        className={styles.dialogCancel}
-                        disabled={sessionsDeleting}
-                        type="button"
-                      >
-                        {t("cancel")}
-                      </button>
-                    </AlertDialog.Cancel>
-                    <AlertDialog.Action asChild>
-                      <button
-                        autoFocus
-                        className={styles.dialogConfirm}
-                        disabled={sessionsDeleting}
-                        onClick={(event) => {
-                          event.preventDefault();
-                          void deleteSelectedSessions();
-                        }}
-                        type="button"
-                      >
-                        {sessionsDeleting
-                          ? t("sessionsDeleting")
-                          : t("sessionsDeleteSelected")}
-                      </button>
-                    </AlertDialog.Action>
-                  </div>
-                </AlertDialog.Content>
-              </AlertDialog.Portal>
-            </AlertDialog.Root>
-          </>
-        );
+        }
+        return <SessionWorkspace key={sessionProvider.id} onError={showError} onNotice={setNotice} onRefreshingChange={setSessionsRefreshing} provider={sessionProvider} refreshKey={sessionRefreshKey} />;
       }
       return (
         <div className={styles.placeholder}>
@@ -1582,7 +1270,45 @@ export function HomePage() {
         <p>{t("emptyDescription", { application: t(selected) })}</p>
       </div>
     ) : (
-      <AccountList accounts={accounts} busy={busy} kind={selected} key={selected} onDuplicate={(account) => void duplicateAccount(account)} onExport={(account) => void openAccountExport(account)} onLaunchBot={(account) => void launchBot(account)} onRemove={remove} onReorder={(activeId, targetId) => void reorder(activeId, targetId)} onSwitch={switchTo} onTest={(account) => void testApiKey(account)} progress={switchProgress} testingId={testingId} />
+      grokBotMode ? (
+        <>
+          <GrokBotStatusCard
+            accounts={accounts}
+            busy={busy}
+            loading={grokBotStatusLoading}
+            onError={showError}
+            onRefresh={() => void refreshGrokBotPage()}
+            onSwitchAccount={(account) => void launchBot(account)}
+            refreshing={grokBotStatusLoading || sessionsRefreshing}
+            status={grokBotStatus}
+          />
+          <GrokBotAccountList
+            accounts={accounts}
+            busy={busy}
+            key="grokBot-accounts"
+            onExport={(account) => void openGrokBotExport(account)}
+            onLaunchBot={(account) => void launchBot(account)}
+            onRemove={remove}
+            onReorder={(activeId, targetId) => void reorder(activeId, targetId)}
+          />
+        </>
+      ) : (
+        <AccountList
+          accounts={accounts}
+          busy={busy}
+          kind={selected}
+          key={selected}
+          onDuplicate={(account) => void duplicateAccount(account)}
+          onExport={(account) => void openAccountExport(account)}
+          onLaunchBot={(account) => void launchBot(account)}
+          onRemove={remove}
+          onReorder={(activeId, targetId) => void reorder(activeId, targetId)}
+          onSwitch={switchTo}
+          onTest={(account) => void testApiKey(account)}
+          progress={switchProgress}
+          testingId={testingId}
+        />
+      )
     );
   };
 
@@ -1607,10 +1333,11 @@ export function HomePage() {
           <div className={styles.headerModes}>
           <Tabs.Root
             className={styles.switcher}
-            onValueChange={(value) =>
-              selectApplication(value as ApplicationKind)
-            }
-            value={selected}
+            onValueChange={(value) => {
+              if (value === "grokBot") openGrokBotMode();
+              else selectApplication(value as ApplicationKind);
+            }}
+            value={grokBotMode ? "grokBot" : selected}
           >
             <Tabs.List aria-label={t("applications")}>
               {APPLICATION_KINDS.map((kind) => (
@@ -1622,6 +1349,10 @@ export function HomePage() {
                       t(kind))}
                 </Tabs.Trigger>
               ))}
+              <Tabs.Trigger className={styles.appTab} value="grokBot">
+                <img alt="" className="ink" src={grokBotIcon} />
+                {t("grokBot")}
+              </Tabs.Trigger>
             </Tabs.List>
           </Tabs.Root>
           </div>
@@ -1632,18 +1363,33 @@ export function HomePage() {
             kind={selected}
             onExport={() => void exportAccounts()}
             onPluginsExpandedChange={setPluginsExpanded}
-            onRefresh={() => void refresh()}
-            onSessionsRefresh={() => setSessionRefreshKey((current) => current + 1)}
+            onRefresh={() => {
+              if (grokBotMode) void refreshGrokBotAccountQuotas();
+              else void refresh();
+            }}
+            onSessionsRefresh={() => {
+              if (grokBotMode) {
+                setSessionRefreshKey((current) => current + 1);
+                void loadGrokBotStatus();
+              } else {
+                setSessionRefreshKey((current) => current + 1);
+              }
+            }}
             pluginsExpanded={pluginsExpanded}
             refreshing={refreshing}
             sessionsRefreshing={sessionsRefreshing}
             section={workspaceSection}
+            sessionsRefreshLabel={grokBotMode ? t("refreshSessions") : undefined}
+            showAddAccount={!grokBotMode}
           />
         </header>
         <section className={styles.workspace}>
           <aside aria-label={t("accountSections")} className={styles.sidebar}>
             <nav className={styles.sidebarNav}>
-              {workspaceSections.map(({ id, icon: Icon, labelKey }) => {
+              {workspaceSections.filter((section) => {
+                if (grokBotMode) return section.id === "accounts" || section.id === "sessions";
+                return !section.cursorOnly || isCursor;
+              }).map(({ id, icon: Icon, image, labelKey }) => {
                 const count =
                   id === "accounts"
                     ? accounts.length
@@ -1675,7 +1421,7 @@ export function HomePage() {
                       }}
                       type="button"
                     >
-                      <Icon aria-hidden="true" size={18} />
+                      {image ? <img alt="" className={id === "grokBot" ? styles.sidebarGrokBotIcon : styles.sidebarAppIcon} src={image} /> : Icon && <Icon aria-hidden="true" size={18} />}
                       {showBadge && (
                         <span
                           aria-hidden="true"
@@ -1757,11 +1503,20 @@ export function HomePage() {
       {exportTarget && exportData !== undefined && (
         <ExportDialog
           data={[exportData]}
-          filename={`${selected}-account-${exportTarget.id}.json`}
+          description={exportKind === "grokBot" ? t("exportGrokBotDescription") : undefined}
+          filename={
+            exportKind === "grokBot"
+              ? `grok-bot-account-${exportTarget.id}.json`
+              : `${selected}-account-${exportTarget.id}.json`
+          }
           onOpenChange={(open) => {
-            if (!open) setExportTarget(undefined);
+            if (!open) {
+              setExportTarget(undefined);
+              setExportKind("account");
+            }
           }}
           open
+          title={exportKind === "grokBot" ? t("exportGrokBot") : undefined}
         />
       )}
       <ToastMessage

@@ -8,6 +8,7 @@ mod error;
 mod grok;
 mod grok_sessions;
 mod grok_bot;
+mod grok_bot_sessions;
 mod models;
 mod sql_backup;
 mod store;
@@ -144,6 +145,11 @@ fn dialog_labels() -> DialogLabels {
 
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first so a second launch notifies this process
+        // instead of opening another window (Windows / Linux / macOS CLI).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -298,6 +304,7 @@ pub fn run() {
             commands::set_cursor_plugin_enabled,
             commands::delete_cursor_plugin,
             commands::list_accounts,
+            commands::list_grok_bot_accounts,
             commands::get_database_path,
             commands::move_database,
             commands::export_database,
@@ -308,8 +315,12 @@ pub fn run() {
             commands::get_cursor_export_record,
             commands::refresh_account_subscription,
             commands::refresh_all_cursor_accounts,
+            commands::refresh_grok_bot_accounts,
+            commands::refresh_all_grok_accounts,
             commands::refresh_all_codex_accounts,
             commands::get_cursor_usage,
+            commands::get_grok_usage,
+            commands::get_saved_grok_usage,
             commands::get_saved_cursor_usage,
             commands::reorder_accounts,
             commands::import_current_account,
@@ -317,11 +328,19 @@ pub fn run() {
             commands::start_official_login,
             commands::cancel_official_login,
             commands::open_official_login_url,
+            commands::open_external_url,
             commands::delete_account,
             commands::switch_account,
             commands::force_restart_cursor,
+            commands::get_grok_bot_export_record,
             commands::prepare_launch_grok_bot,
             commands::confirm_launch_grok_bot,
+            commands::get_grok_bot_status,
+            commands::list_grok_bot_sessions,
+            commands::get_grok_bot_session_messages,
+            commands::delete_grok_bot_session,
+            commands::delete_grok_bot_sessions,
+            commands::rename_grok_bot_session,
             commands::get_codex_api_key_account,
             commands::update_codex_api_key_account,
             commands::duplicate_codex_api_key_account,
@@ -335,6 +354,18 @@ pub fn run() {
             tools::run_tool_lifecycle_action,
             tools::probe_tool_installations
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running storm-dock");
+        .build(tauri::generate_context!())
+        .expect("error while building storm-dock")
+        .run(|app, event| {
+            // macOS dock clicks reuse the running process and emit Reopen
+            // instead of starting a second instance.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                show_main_window(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
+            }
+        });
 }

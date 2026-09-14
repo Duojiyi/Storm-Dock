@@ -8,7 +8,6 @@ import {
   FolderOpen,
   MessageSquareText,
   Pencil,
-  Play,
   RefreshCw,
   Search,
   Trash2,
@@ -18,7 +17,15 @@ import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 
 import { useTranslation } from "react-i18next";
 import { CopyIconButton } from "../../../components/CopyIconButton";
 import { Tooltip } from "../../../components/Tooltip";
-import type { LocalSession, LocalSessionMessage, SessionDeleteBatchResult } from "../../../lib/types";
+import {
+  deleteGrokBotSession,
+  deleteGrokBotSessions,
+  getGrokBotSessionMessages,
+  listGrokBotSessions,
+  renameGrokBotSession,
+} from "../../../lib/api";
+import type { LocalSession, LocalSessionMessage } from "../../../lib/types";
+import grokBotIcon from "../../../assets/tools/grok-bot.png";
 import styles from "../page.module.css";
 import {
   filterSessions,
@@ -30,20 +37,7 @@ import {
 } from "../lib/sessionPresentation";
 import { useLatestRequest } from "../hooks/useLatestRequest";
 
-export type SessionProvider = {
-  id: string;
-  label: string;
-  icon: string;
-  list: () => Promise<LocalSession[]>;
-  loadMessages: (id: string) => Promise<LocalSessionMessage[]>;
-  remove?: (id: string) => Promise<unknown>;
-  removeMany?: (ids: string[]) => Promise<SessionDeleteBatchResult>;
-  launch?: (id: string) => Promise<unknown>;
-  rename?: (id: string, title: string) => Promise<unknown>;
-};
-
 type Props = {
-  provider: SessionProvider;
   header?: ReactNode;
   onError: (error: unknown) => void;
   onNotice: (message: string) => void;
@@ -51,8 +45,16 @@ type Props = {
   onRefreshingChange: (refreshing: boolean) => void;
 };
 
-export const SessionWorkspace = memo(function SessionWorkspace({ provider, header, onError, onNotice, refreshKey, onRefreshingChange }: Props) {
+export const GrokBotSessionWorkspace = memo(function GrokBotSessionWorkspace({
+  header,
+  onError,
+  onNotice,
+  refreshKey,
+  onRefreshingChange,
+}: Props) {
   const { t } = useTranslation();
+  const label = t("grokBot");
+  const icon = grokBotIcon;
   const [sessions, setSessions] = useState<LocalSession[]>([]);
   const [refreshing, setRefreshing] = useState(true);
   const [selectedId, setSelectedId] = useState<string>();
@@ -74,7 +76,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
     setRefreshing(true);
     onRefreshingChange(true);
     try {
-      const next = uniqueSessions(await provider.list());
+      const next = uniqueSessions(await listGrokBotSessions());
       setSessions(next);
       setExpandedProjects((current) => {
         const projects = new Set(next.map((session) => session.projectDir?.trim() || "__unknown__"));
@@ -86,7 +88,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
       setRefreshing(false);
       onRefreshingChange(false);
     }
-  }, [onError, onRefreshingChange, provider]);
+  }, [onError, onRefreshingChange]);
 
   useEffect(() => {
     setSelectedId(undefined);
@@ -109,20 +111,20 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
     }
     const isCurrent = beginMessageRequest();
     setMessagesLoading(true);
-    void provider.loadMessages(selectedId)
+    void getGrokBotSessionMessages(selectedId)
       .then((next) => { if (isCurrent()) setMessages(next); })
       .catch(onError)
       .finally(() => { if (isCurrent()) setMessagesLoading(false); });
-  }, [beginMessageRequest, onError, provider, selectedId]);
+  }, [beginMessageRequest, onError, selectedId]);
 
   const visibleSessions = useMemo(() => filterSessions(sessions, search), [search, sessions]);
   const projects = useMemo(() => groupSessions(visibleSessions), [visibleSessions]);
   const selectedSession = sessions.find((session) => session.id === selectedId);
-  const canDelete = Boolean(provider.remove);
-  const canRename = Boolean(provider.rename);
+  const canDelete = true;
+  const canRename = true;
 
   const saveRename = async () => {
-    if (!provider.rename || !selectedSession || renaming) return;
+    if (!selectedSession || renaming) return;
     const title = renameTitle.trim();
     if (!title || title === selectedSession.title) {
       setRenameOpen(false);
@@ -130,7 +132,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
     }
     setRenaming(true);
     try {
-      await provider.rename(selectedSession.id, title);
+      await renameGrokBotSession(selectedSession.id, title);
       setSessions((current) => current.map((session) => session.id === selectedSession.id ? { ...session, title } : session));
       setRenameOpen(false);
       onNotice(t("sessionRenamed"));
@@ -143,20 +145,14 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
 
   const deleteSessions = async () => {
     const targets = deleteTargets ?? [];
-    if ((!provider.remove && !provider.removeMany) || !targets.length || deleting) return;
+    if (!targets.length || deleting) return;
     setDeleting(true);
     let deleted = new Set<string>();
     let failedCount = targets.length;
     try {
-      if (provider.removeMany) {
-        const result = await provider.removeMany(targets);
-        deleted = new Set(result.deletedIds);
-        failedCount = result.failedIds.length;
-      } else if (provider.remove) {
-        const result = await Promise.allSettled(targets.map(provider.remove));
-        deleted = new Set(targets.filter((_, index) => result[index].status === "fulfilled"));
-        failedCount = targets.length - deleted.size;
-      }
+      const result = await deleteGrokBotSessions(targets);
+      deleted = new Set(result.deletedIds);
+      failedCount = result.failedIds.length;
     } catch (error) {
       onError(error);
     }
@@ -166,13 +162,11 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
     setDeleteTargets(undefined);
     setDeleting(false);
     if (failedCount) onError(t("sessionsBatchDeleteFailed", { count: failedCount }));
-    else onNotice(provider.id === "cursor"
-      ? t("sessionsCursorRestartRequired", { count: deleted.size })
-      : t("sessionsBatchDeleted", { count: deleted.size }));
+    else onNotice(t("sessionsBatchDeleted", { count: deleted.size }));
   };
 
   if (refreshing && !sessions.length) return <>{header}<div className={styles.empty}><RefreshCw aria-hidden="true" className={styles.spinning} size={32} /><h2>{t("sessionsLoading")}</h2></div></>;
-  if (!sessions.length) return <>{header}<div className={styles.empty}><MessageSquareText aria-hidden="true" size={32} /><h2>{t("sessionsEmptyTitle")}</h2><p>{t("sessionsEmptyDescription", { application: provider.label })}</p></div></>;
+  if (!sessions.length) return <>{header}<div className={styles.empty}><MessageSquareText aria-hidden="true" size={32} /><h2>{t("sessionsEmptyTitle")}</h2><p>{t("sessionsEmptyDescription", { application: label })}</p></div></>;
 
   return <>
     {header}
@@ -184,7 +178,7 @@ export const SessionWorkspace = memo(function SessionWorkspace({ provider, heade
         {canDelete && selectionMode && <div className={styles.sessionBatchBar}><span>{t("sessionsSelected", { count: selectedIds.size })}</span><button onClick={() => setSelectedIds((current) => toggleSelectedIds(current, visibleSessions.map((session) => session.id)))} type="button">{visibleSessions.every((session) => selectedIds.has(session.id)) ? t("sessionsClearAll") : t("sessionsSelectAll")}</button><button onClick={() => setSelectedIds(new Set())} type="button">{t("sessionsClearSelection")}</button><button className={styles.sessionBatchDelete} disabled={!selectedIds.size || deleting} onClick={() => setDeleteTargets([...selectedIds])} type="button"><Trash2 aria-hidden="true" size={14} />{deleting ? t("sessionsDeleting") : t("sessionsDeleteSelected")}</button></div>}
         <div className={styles.sessionProjects}>{[...projects].map(([project, projectSessions]) => { const expanded = expandedProjects.has(project); const label = project === "__unknown__" ? t("sessionsUnknownProject") : (project.split("/").filter(Boolean).at(-1) ?? project); const allSelected = projectSessions.every((session) => selectedIds.has(session.id)); return <section className={styles.sessionProject} key={project}><div className={styles.sessionProjectHeader}>{canDelete && selectionMode && <input aria-label={t("selectSessionProject", { project: label })} checked={allSelected} onChange={(event) => setSelectedIds((current) => { const next = new Set(current); projectSessions.forEach((session) => event.target.checked ? next.add(session.id) : next.delete(session.id)); return next; })} type="checkbox" />}<button aria-expanded={expanded} aria-label={t("toggleSessionProject", { project: label })} className={styles.sessionProjectTrigger} onClick={() => setExpandedProjects((current) => { const next = new Set(current); next.has(project) ? next.delete(project) : next.add(project); return next; })} type="button">{expanded ? <ChevronDown aria-hidden="true" size={15} /> : <ChevronRight aria-hidden="true" size={15} />}<FolderOpen aria-hidden="true" size={16} /><span>{label}</span><small className={styles.sessionProjectCount}>{projectSessions.length}</small></button></div>{expanded && <div className={styles.sessionList}>{projectSessions.map((session) => <div className={`${styles.sessionCard} ${session.id === selectedId ? styles.sessionCardActive : ""}`} key={session.id}>{canDelete && selectionMode && <input aria-label={t("selectSession", { session: session.title })} checked={selectedIds.has(session.id)} onChange={(event) => setSelectedIds((current) => { const next = new Set(current); event.target.checked ? next.add(session.id) : next.delete(session.id); return next; })} type="checkbox" />}<button aria-current={session.id === selectedId ? "page" : undefined} onClick={() => setSelectedId(session.id)} type="button"><strong>{session.title}</strong><span>{formatRelativeSessionTime(session.updatedAt, t)}</span></button></div>)}</div>}</section>; })}</div>
       </div>
-      <section className={styles.sessionDetail}>{!selectedSession ? <div className={styles.sessionDetailEmpty}><MessageSquareText aria-hidden="true" size={32} /><p>{t("sessionsSelect")}</p></div> : <><header className={styles.sessionDetailHeader}><div className={styles.sessionDetailTop}><h2>{selectedSession.title}</h2><div className={styles.sessionDetailActions}>{canRename && <Tooltip content={t("renameSession")}><button aria-label={t("renameSession")} onClick={() => { setRenameTitle(selectedSession.title); setRenameOpen(true); }} type="button"><Pencil aria-hidden="true" size={16} /></button></Tooltip>}{provider.launch && <Tooltip content={t("launchSession")}><button aria-label={t("launchSession")} onClick={() => void provider.launch?.(selectedSession.id).catch(onError)} type="button"><Play aria-hidden="true" size={17} /></button></Tooltip>}{provider.remove && <Tooltip content={t("deleteSession")}><button aria-label={t("deleteSession")} onClick={() => setDeleteTargets([selectedSession.id])} type="button"><Trash2 aria-hidden="true" size={17} /></button></Tooltip>}</div></div><div className={styles.sessionDetailMeta}><Clock3 aria-hidden="true" size={13} /><span>{new Date(selectedSession.updatedAt).toLocaleString()}</span>{selectedSession.projectDir && <><FolderOpen aria-hidden="true" size={13} /><span>{selectedSession.projectDir.split("/").filter(Boolean).at(-1)}</span></>}</div><dl className={styles.sessionDetailFields}><div><dt>{t("sessionsSourcePath")}</dt><dd><code>{selectedSession.sourcePath}</code><CopyIconButton onCopied={() => onNotice(t("copied"))} onError={onError} text={selectedSession.sourcePath} /></dd></div>{provider.launch && <div><dt>{t("sessionsResumeCommand")}</dt><dd><code>{`codex resume ${selectedSession.id}`}</code><CopyIconButton onCopied={() => onNotice(t("copied"))} onError={onError} text={`codex resume ${selectedSession.id}`} /></dd></div>}</dl></header><div className={styles.sessionMessages}>{messagesLoading ? <div className={styles.sessionDetailEmpty}><RefreshCw aria-hidden="true" className={styles.spinning} size={24} /><p>{t("sessionsMessagesLoading")}</p></div> : messages.length ? messages.map((message, index) => <article className={`${styles.sessionMessage} ${message.role === "user" ? styles.sessionMessageUser : styles.sessionMessageAssistant}`} key={`${message.timestamp ?? index}-${index}`}><header>{message.role === "user" ? <strong>{t("sessionsRoleUser")}</strong> : <img alt={provider.label} className={styles.sessionMessageAppIcon} src={provider.icon} />} {message.timestamp && <time>{new Date(message.timestamp).toLocaleString()}</time>}</header><p>{message.content}</p></article>) : <div className={styles.sessionDetailEmpty}><p>{t("sessionsMessagesEmpty")}</p></div>}</div></>}</section>
+      <section className={styles.sessionDetail}>{!selectedSession ? <div className={styles.sessionDetailEmpty}><MessageSquareText aria-hidden="true" size={32} /><p>{t("sessionsSelect")}</p></div> : <><header className={styles.sessionDetailHeader}><div className={styles.sessionDetailTop}><h2>{selectedSession.title}</h2><div className={styles.sessionDetailActions}>{canRename && <Tooltip content={t("renameSession")}><button aria-label={t("renameSession")} onClick={() => { setRenameTitle(selectedSession.title); setRenameOpen(true); }} type="button"><Pencil aria-hidden="true" size={16} /></button></Tooltip>}{canDelete && <Tooltip content={t("deleteSession")}><button aria-label={t("deleteSession")} onClick={() => setDeleteTargets([selectedSession.id])} type="button"><Trash2 aria-hidden="true" size={17} /></button></Tooltip>}</div></div><div className={styles.sessionDetailMeta}><Clock3 aria-hidden="true" size={13} /><span>{new Date(selectedSession.updatedAt).toLocaleString()}</span>{selectedSession.projectDir && <><FolderOpen aria-hidden="true" size={13} /><span>{selectedSession.projectDir.split("/").filter(Boolean).at(-1)}</span></>}</div><dl className={styles.sessionDetailFields}><div><dt>{t("sessionsSourcePath")}</dt><dd><code>{selectedSession.sourcePath}</code><CopyIconButton onCopied={() => onNotice(t("copied"))} onError={onError} text={selectedSession.sourcePath} /></dd></div></dl></header><div className={styles.sessionMessages}>{messagesLoading ? <div className={styles.sessionDetailEmpty}><RefreshCw aria-hidden="true" className={styles.spinning} size={24} /><p>{t("sessionsMessagesLoading")}</p></div> : messages.length ? messages.map((message, index) => <article className={`${styles.sessionMessage} ${message.role === "user" ? styles.sessionMessageUser : styles.sessionMessageAssistant}`} key={`${message.timestamp ?? index}-${index}`}><header>{message.role === "user" ? <strong>{t("sessionsRoleUser")}</strong> : <img alt={label} className={styles.sessionMessageAppIcon} src={icon} />} {message.timestamp && <time>{new Date(message.timestamp).toLocaleString()}</time>}</header><p>{message.content}</p></article>) : <div className={styles.sessionDetailEmpty}><p>{t("sessionsMessagesEmpty")}</p></div>}</div></>}</section>
     </div>
     <AlertDialog.Root onOpenChange={(open) => { if (!open && !deleting) setDeleteTargets(undefined); }} open={Boolean(deleteTargets)}><AlertDialog.Portal><AlertDialog.Overlay className={styles.dialogOverlay} /><AlertDialog.Content className={styles.dialogContent}><AlertDialog.Title>{t("sessionsBatchDeleteTitle")}</AlertDialog.Title><AlertDialog.Description>{t("sessionsBatchDeleteConfirm", { count: deleteTargets?.length ?? 0 })}</AlertDialog.Description><div className={styles.dialogActions}><AlertDialog.Cancel asChild><button className={styles.dialogCancel} disabled={deleting} type="button">{t("cancel")}</button></AlertDialog.Cancel><AlertDialog.Action asChild><button autoFocus className={styles.dialogConfirm} disabled={deleting} onClick={(event) => { event.preventDefault(); void deleteSessions(); }} type="button">{deleting ? t("sessionsDeleting") : t("sessionsDeleteSelected")}</button></AlertDialog.Action></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>
     <AlertDialog.Root onOpenChange={(open) => { if (!open && !renaming) setRenameOpen(false); }} open={renameOpen}><AlertDialog.Portal><AlertDialog.Overlay className={styles.dialogOverlay} /><AlertDialog.Content className={styles.dialogContent}><AlertDialog.Title>{t("renameSession")}</AlertDialog.Title><AlertDialog.Description>{t("renameSessionDescription")}</AlertDialog.Description><input aria-label={t("sessionTitle")} autoFocus className={styles.dialogInput} disabled={renaming} onChange={(event) => setRenameTitle(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void saveRename(); } }} value={renameTitle} /><div className={styles.dialogActions}><AlertDialog.Cancel asChild><button className={styles.dialogCancel} disabled={renaming} type="button">{t("cancel")}</button></AlertDialog.Cancel><button className={styles.dialogPrimary} disabled={renaming || !renameTitle.trim()} onClick={() => void saveRename()} type="button">{renaming ? t("savingSessionTitle") : t("save")}</button></div></AlertDialog.Content></AlertDialog.Portal></AlertDialog.Root>

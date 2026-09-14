@@ -14,7 +14,9 @@ use crate::cursor::api::{
     uninstall_cursor_marketplace_plugin,
 };
 use crate::cursor::oauth::{complete_cursor_oauth, open_browser, OauthLoginState};
-use crate::cursor::usage::{fetch_cursor_usage, usage_pools};
+use crate::cursor::usage::{fetch_cursor_usage, fetch_grok_bot_quota_fast, usage_pools};
+use crate::grok::subscription::fetch_grok_subscription;
+use crate::grok::usage::fetch_grok_usage;
 use crate::error::AppError;
 use crate::models::{
     import_type, Account, AccountSummary, ApplicationKind, ApplicationStatus, CursorUsageDetails,
@@ -1448,13 +1450,20 @@ pub(crate) fn refresh_account_subscription(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> std::result::Result<(), String> {
-    let session = state
-        .0
-        .lock()
-        .map_err(|_| "账户存储不可用".to_string())?
-        .subscription_session(&id)
-        .map_err(error_text)?;
-    let summary = match fetch_cursor_subscription(&session) {
+    let (application, session) = {
+        let mut controller = state
+            .0
+            .lock()
+            .map_err(|_| "账户存储不可用".to_string())?;
+        let account = controller.account(&id).map_err(error_text)?;
+        let session = controller.subscription_session(&id).map_err(error_text)?;
+        (account.application, session)
+    };
+    let summary = match application {
+        ApplicationKind::Grok => fetch_grok_subscription(&session),
+        _ => fetch_cursor_subscription(&session),
+    };
+    let summary = match summary {
         Ok(summary) => summary,
         Err(error) => {
             if error.to_string().contains("失效") || error.to_string().contains("过期") {
@@ -1607,6 +1616,259 @@ pub(crate) async fn refresh_all_cursor_accounts(
 }
 
 #[tauri::command]
+pub(crate) fn list_grok_bot_accounts(
+    state: State<'_, AppState>,
+) -> std::result::Result<Vec<AccountSummary>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())
+        .map(|controller| controller.grok_bot_accounts())
+}
+
+/// Refresh quotas only for Grok Bot–eligible accounts (non-free Cursor + Grok Build).
+/// Bounded concurrency (max 3) — same fast path as Cursor account list refresh.
+#[tauri::command]
+pub(crate) async fn refresh_grok_bot_accounts(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> std::result::Result<RefreshAccountsResult, String> {
+    let (sessions, missing_credentials) = {
+        let mut controller = state.0.lock().map_err(|_| "账户存储不可用".to_string())?;
+        let mut sessions = Vec::new();
+        let mut missing = Vec::new();
+        for account in controller.grok_bot_launchable_accounts() {
+            match controller.subscription_session(&account.id) {
+                Ok(session) => sessions.push((account.id, account.application, session)),
+                Err(_) => missing.push(account.id),
+            }
+        }
+        (sessions, missing)
+    };
+    let total = sessions.len() + missing_credentials.len();
+    if sessions.is_empty() {
+        for id in &missing_credentials {
+            if let Ok(mut controller) = state.0.lock() {
+                let _ = controller.mark_credential_missing(id);
+            }
+        }
+        if !missing_credentials.is_empty() {
+            let _ = app.emit("accounts-changed", ());
+        }
+        return Ok(RefreshAccountsResult {
+            total,
+            failed: missing_credentials.len(),
+            invalid: 0,
+            missing: missing_credentials.len(),
+        });
+    }
+    let progress_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let session_count = sessions.len();
+        let (job_sender, job_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        for session in sessions {
+            let _ = job_sender.send(session);
+        }
+        drop(job_sender);
+        let job_receiver = Arc::new(StdMutex::new(job_receiver));
+        let workers = usize::min(3, session_count);
+        let jobs = (0..workers)
+            .map(|_| {
+                let jobs = Arc::clone(&job_receiver);
+                let results = result_sender.clone();
+                thread::spawn(move || loop {
+                    let Some((id, application, session)) =
+                        jobs.lock().ok().and_then(|receiver| receiver.recv().ok())
+                    else {
+                        break;
+                    };
+                    let refreshed = match application {
+                        ApplicationKind::Grok => fetch_grok_subscription(&session)
+                            .map(|summary| (summary, None, None)),
+                        _ => fetch_grok_bot_quota_fast(&session)
+                            .map(|(summary, grok, sand)| (summary, grok, sand)),
+                    };
+                    let _ = results.send((id, refreshed));
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(result_sender);
+        let mut updates = Vec::new();
+        let mut failures = Vec::new();
+        for completed in 1..=session_count {
+            match result_receiver.recv() {
+                Ok((id, Ok(summary))) => updates.push((id, summary)),
+                Ok((id, Err(error))) => failures.push((id, error.to_string())),
+                Err(_) => {
+                    failures.push((String::new(), "刷新线程异常退出".into()));
+                    break;
+                }
+            }
+            let _ = progress_app.emit(
+                "account-refresh-progress",
+                RefreshAccountsProgress { completed, total },
+            );
+        }
+        for job in jobs {
+            let _ = job.join();
+        }
+        (updates, failures)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let (updates, failures) = result;
+    let invalid = failures
+        .iter()
+        .filter(|(_, message)| message.contains("失效") || message.contains("过期"))
+        .count();
+    let missing = missing_credentials.len();
+    let failed = failures.len() + missing;
+    let mut controller = state.0.lock().map_err(|_| "账户存储不可用".to_string())?;
+    for id in missing_credentials {
+        let _ = controller.mark_credential_missing(&id);
+    }
+    for (id, message) in failures {
+        if !id.is_empty() && (message.contains("失效") || message.contains("过期")) {
+            let _ = controller.mark_token_invalid(&id);
+        }
+    }
+    for (id, (summary, grok, sand)) in updates {
+        controller
+            .save_subscription(&id, summary)
+            .map_err(error_text)?;
+        let (metric, reset_at) = match grok {
+            Some((metric, reset_at)) => (Some(metric), reset_at),
+            None => (None, None),
+        };
+        controller
+            .save_grok_bot_usage(&id, metric, reset_at, sand)
+            .map_err(error_text)?;
+    }
+    let _ = app.emit("accounts-changed", ());
+    Ok(RefreshAccountsResult {
+        total,
+        failed,
+        invalid,
+        missing,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn refresh_all_grok_accounts(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> std::result::Result<RefreshAccountsResult, String> {
+    let (sessions, missing_credentials) = {
+        let mut controller = state.0.lock().map_err(|_| "账户存储不可用".to_string())?;
+        let mut sessions = Vec::new();
+        let mut missing = Vec::new();
+        for account in controller.accounts(ApplicationKind::Grok) {
+            match controller.subscription_session(&account.id) {
+                Ok(session) => sessions.push((account.id, session)),
+                Err(_) => missing.push(account.id),
+            }
+        }
+        (sessions, missing)
+    };
+    let total = sessions.len() + missing_credentials.len();
+    if sessions.is_empty() {
+        for id in &missing_credentials {
+            if let Ok(mut controller) = state.0.lock() {
+                let _ = controller.mark_credential_missing(id);
+            }
+        }
+        if !missing_credentials.is_empty() {
+            let _ = app.emit("accounts-changed", ());
+        }
+        return Ok(RefreshAccountsResult {
+            total,
+            failed: missing_credentials.len(),
+            invalid: 0,
+            missing: missing_credentials.len(),
+        });
+    }
+    let progress_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let session_count = sessions.len();
+        let (job_sender, job_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = mpsc::channel();
+        for session in sessions {
+            let _ = job_sender.send(session);
+        }
+        drop(job_sender);
+        let job_receiver = Arc::new(StdMutex::new(job_receiver));
+        let workers = usize::min(3, session_count);
+        let jobs = (0..workers)
+            .map(|_| {
+                let jobs = Arc::clone(&job_receiver);
+                let results = result_sender.clone();
+                thread::spawn(move || loop {
+                    let Some((id, session)) =
+                        jobs.lock().ok().and_then(|receiver| receiver.recv().ok())
+                    else {
+                        break;
+                    };
+                    let refreshed = fetch_grok_subscription(&session);
+                    let _ = results.send((id, refreshed));
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(result_sender);
+        let mut updates = Vec::new();
+        let mut failures = Vec::new();
+        for completed in 1..=session_count {
+            match result_receiver.recv() {
+                Ok((id, Ok(summary))) => updates.push((id, summary)),
+                Ok((id, Err(error))) => failures.push((id, error.to_string())),
+                Err(_) => {
+                    failures.push((String::new(), "刷新线程异常退出".into()));
+                    break;
+                }
+            }
+            let _ = progress_app.emit(
+                "account-refresh-progress",
+                RefreshAccountsProgress { completed, total },
+            );
+        }
+        for job in jobs {
+            let _ = job.join();
+        }
+        (updates, failures)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let (updates, failures) = result;
+    let invalid = failures
+        .iter()
+        .filter(|(_, message)| message.contains("失效") || message.contains("过期"))
+        .count();
+    let missing = missing_credentials.len();
+    let failed = failures.len() + missing;
+    let mut controller = state.0.lock().map_err(|_| "账户存储不可用".to_string())?;
+    for id in missing_credentials {
+        let _ = controller.mark_credential_missing(&id);
+    }
+    for (id, message) in failures {
+        if !id.is_empty() && (message.contains("失效") || message.contains("过期")) {
+            let _ = controller.mark_token_invalid(&id);
+        }
+    }
+    for (id, summary) in updates {
+        controller
+            .save_subscription(&id, summary)
+            .map_err(error_text)?;
+    }
+    let _ = app.emit("accounts-changed", ());
+    Ok(RefreshAccountsResult {
+        total,
+        failed,
+        invalid,
+        missing,
+    })
+}
+
+#[tauri::command]
 pub(crate) async fn refresh_all_codex_accounts(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1691,6 +1953,64 @@ pub(crate) async fn refresh_all_codex_accounts(
         invalid,
         missing,
     })
+}
+
+#[tauri::command]
+pub(crate) async fn get_grok_usage(
+    id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> std::result::Result<CursorUsageDetails, String> {
+    let (account, session) = {
+        let mut controller = state
+            .0
+            .lock()
+            .map_err(|_| "账户存储不可用".to_string())?;
+        let account = controller.account(&id).map_err(error_text)?;
+        if account.application != ApplicationKind::Grok {
+            return Err("仅支持 Grok Build 账号用量查询。".into());
+        }
+        let session = controller.subscription_session(&id).map_err(error_text)?;
+        (account, session)
+    };
+    let usage_result =
+        tauri::async_runtime::spawn_blocking(move || fetch_grok_usage(&account, &session))
+            .await
+            .map_err(|error| error.to_string())?;
+    let (usage, raw) = match usage_result {
+        Ok(value) => value,
+        Err(error) => {
+            let message = error.to_string();
+            if message.contains("失效") || message.contains("过期") {
+                if let Ok(mut controller) = state.0.lock() {
+                    let _ = controller.mark_token_invalid(&id);
+                }
+                let _ = app.emit("accounts-changed", ());
+            }
+            return Err(error_text(error));
+        }
+    };
+    state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())?
+        .save_grok_usage(&id, usage.clone(), raw)
+        .map_err(error_text)?;
+    let _ = app.emit("accounts-changed", ());
+    Ok(usage)
+}
+
+#[tauri::command]
+pub(crate) fn get_saved_grok_usage(
+    id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Option<CursorUsageDetails>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())?
+        .saved_grok_usage(&id)
+        .map_err(error_text)
 }
 
 #[tauri::command]
@@ -1934,6 +2254,17 @@ pub(crate) fn open_official_login_url(
 
 
 #[tauri::command]
+pub(crate) fn open_external_url(url: String) -> std::result::Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
+        return Err("仅支持打开 http(s) 链接。".into());
+    }
+    open_browser(trimmed).map_err(error_text)
+}
+
+
+
+#[tauri::command]
 pub(crate) fn delete_account(
     id: String,
     app: AppHandle,
@@ -2033,10 +2364,21 @@ fn grok_bot_plan_allowed(plan: Option<&str>) -> bool {
 fn grok_bot_session(id: &str, state: &State<'_, AppState>) -> std::result::Result<Session, String> {
     state.0.lock().map_err(|_| "账户存储不可用".to_string()).and_then(|controller| {
         let account = controller.account(id).map_err(error_text)?;
-        if account.application != ApplicationKind::Cursor { return Err("仅 Cursor 账号可启动 Grok Bot。".into()); }
+        if !matches!(account.application, ApplicationKind::Cursor | ApplicationKind::Grok) {
+            return Err("仅 Cursor 或 Grok Build 账号可启动 Grok Bot。".into());
+        }
         if !grok_bot_plan_allowed(account.subscription.plan.as_deref()) { return Err("Grok Bot 不适用于 Free 账号。".into()); }
         controller.load_session(id).map_err(error_text)
     })
+}
+
+#[tauri::command]
+pub(crate) fn get_grok_bot_export_record(
+    id: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<serde_json::Value, String> {
+    let session = grok_bot_session(&id, &state)?;
+    crate::grok_bot::export_client_account(&session).map_err(error_text)
 }
 
 #[tauri::command]
@@ -2061,6 +2403,87 @@ pub(crate) async fn confirm_launch_grok_bot(
         .await
         .map_err(|error| error.to_string())?
         .map_err(error_text)
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GrokBotStatus {
+    pub(crate) installed: bool,
+    pub(crate) signed_in: bool,
+    pub(crate) running: bool,
+    pub(crate) available: bool,
+    pub(crate) reason: Option<String>,
+    pub(crate) current_account_id: Option<String>,
+    pub(crate) current_account_label: Option<String>,
+}
+
+#[tauri::command]
+pub(crate) fn get_grok_bot_status(state: State<'_, AppState>) -> GrokBotStatus {
+    let local = crate::grok_bot::local_status();
+    let current = state.0.lock().ok().and_then(|controller| {
+        controller
+            .accounts(ApplicationKind::Cursor)
+            .into_iter()
+            .chain(controller.accounts(ApplicationKind::Grok))
+            .find(|account| account.is_grok_bot_current)
+    });
+    GrokBotStatus {
+        installed: local.installed,
+        signed_in: local.signed_in,
+        running: local.running,
+        available: local.available,
+        reason: local.reason,
+        current_account_id: current.as_ref().map(|account| account.id.clone()),
+        current_account_label: current.as_ref().map(|account| account.label.clone()),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn list_grok_bot_sessions() -> Vec<CodexSession> {
+    tauri::async_runtime::spawn_blocking(crate::grok_bot_sessions::list_sessions)
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub(crate) async fn get_grok_bot_session_messages(id: String) -> Vec<CodexSessionMessage> {
+    tauri::async_runtime::spawn_blocking(move || crate::grok_bot_sessions::load_messages(&id))
+        .await
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub(crate) async fn delete_grok_bot_session(id: String) -> std::result::Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::grok_bot_sessions::delete_session(&id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn delete_grok_bot_sessions(ids: Vec<String>) -> SessionDeleteBatchResult {
+    let fallback_ids = ids.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (deleted_ids, failed_ids) = crate::grok_bot_sessions::delete_sessions(&ids);
+        SessionDeleteBatchResult {
+            deleted_ids,
+            failed_ids,
+        }
+    })
+    .await
+    .unwrap_or(SessionDeleteBatchResult {
+        deleted_ids: Vec::new(),
+        failed_ids: fallback_ids,
+    })
+}
+
+#[tauri::command]
+pub(crate) async fn rename_grok_bot_session(
+    id: String,
+    title: String,
+) -> std::result::Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || crate::grok_bot_sessions::rename_session(&id, &title))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[derive(Clone, serde::Serialize)]

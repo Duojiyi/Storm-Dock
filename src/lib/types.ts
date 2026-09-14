@@ -2,8 +2,13 @@ export type ApplicationKind = "cursor" | "codex" | "grok";
 
 export const APPLICATION_KINDS = ["cursor", "codex", "grok"] as const;
 
+export function isGrokBotHomeView(search = window.location.search) {
+  return new URLSearchParams(search).get("kind") === "grokBot";
+}
+
 export function applicationKindFromQuery(search = window.location.search): ApplicationKind {
   const kind = new URLSearchParams(search).get("kind");
+  if (kind === "grokBot") return "cursor";
   return kind === "codex" || kind === "grok" ? kind : "cursor";
 }
 
@@ -12,7 +17,7 @@ export function syncDocumentAppKind(kind?: ApplicationKind) {
   else delete document.documentElement.dataset.app;
 }
 
-export function homePath(kind: ApplicationKind, notice?: string) {
+export function homePath(kind: ApplicationKind | "grokBot", notice?: string) {
   const params = new URLSearchParams({ kind });
   if (notice) params.set("notice", notice);
   return `/?${params}`;
@@ -41,10 +46,21 @@ export type ApplicationStatus = {
   reason?: string;
 };
 
+export type GrokBotStatus = {
+  installed: boolean;
+  signedIn: boolean;
+  running: boolean;
+  available: boolean;
+  reason?: string;
+  currentAccountId?: string;
+  currentAccountLabel?: string;
+};
+
 export type Account = {
   id: string;
   label: string;
   email?: string;
+  application?: ApplicationKind;
   importType: "oauth" | "token" | "jwt" | "native" | "api_key";
   subscription: { plan?: string; expiresAt?: number; billingCycleEnd?: string; checkedAt?: number };
   usage?: { kind: "currency" | "percent" | "requests"; used: number; limit?: number; percent: number };

@@ -102,6 +102,7 @@ pub(crate) struct AccountSummary {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) email: Option<String>,
+    pub(crate) application: ApplicationKind,
     pub(crate) import_type: ImportType,
     pub(crate) subscription: SubscriptionSummary,
     pub(crate) usage: Option<UsageMetric>,

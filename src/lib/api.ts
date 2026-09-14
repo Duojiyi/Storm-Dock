@@ -1,8 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, ApplicationKind, ApplicationStatus, CodexSession, CodexSessionMessage, LocalSession, LocalSessionMessage, McpServer, Plugin, SessionDeleteBatchResult } from "./types";
+import type { Account, ApplicationKind, ApplicationStatus, CodexSession, CodexSessionMessage, CursorUsageDetails, GrokBotStatus, LocalSession, LocalSessionMessage, McpServer, Plugin, SessionDeleteBatchResult } from "./types";
 
 export const listApplications = () => invoke<ApplicationStatus[]>("list_applications");
 export const listAccounts = (kind: ApplicationKind) => invoke<Account[]>("list_accounts", { kind });
+export const listGrokBotAccounts = () => invoke<Account[]>("list_grok_bot_accounts");
+export const refreshGrokBotAccounts = () => invoke<{ total: number; failed: number; invalid: number; missing: number }>("refresh_grok_bot_accounts");
 export const getDatabasePath = () => invoke<string>("get_database_path");
 export const moveDatabase = (directory: string) => invoke<string>("move_database", { directory });
 export const exportDatabase = (file: string) => invoke<void>("export_database", { file });
@@ -22,6 +24,17 @@ export const getGrokSessionMessages = (id: string) => invoke<LocalSessionMessage
 export const deleteGrokSession = (id: string) => invoke<void>("delete_grok_session", { id });
 export const deleteGrokSessions = (ids: string[]) => invoke<SessionDeleteBatchResult>("delete_grok_sessions", { ids });
 export const launchGrokSession = (id: string) => invoke("launch_grok_session", { id });
+export const getGrokBotExportRecord = (id: string) => invoke<unknown>("get_grok_bot_export_record", { id });
+export const getGrokBotStatus = () => invoke<GrokBotStatus>("get_grok_bot_status");
+export const getCursorUsage = (id: string) => invoke<CursorUsageDetails>("get_cursor_usage", { id });
+export const getGrokUsage = (id: string) => invoke<CursorUsageDetails>("get_grok_usage", { id });
+export const getSavedGrokUsage = (id: string) => invoke<CursorUsageDetails | null>("get_saved_grok_usage", { id });
+export const openExternalUrl = (url: string) => invoke<void>("open_external_url", { url });
+export const listGrokBotSessions = () => invoke<LocalSession[]>("list_grok_bot_sessions");
+export const getGrokBotSessionMessages = (id: string) => invoke<LocalSessionMessage[]>("get_grok_bot_session_messages", { id });
+export const deleteGrokBotSession = (id: string) => invoke<void>("delete_grok_bot_session", { id });
+export const deleteGrokBotSessions = (ids: string[]) => invoke<SessionDeleteBatchResult>("delete_grok_bot_sessions", { ids });
+export const renameGrokBotSession = (id: string, title: string) => invoke<void>("rename_grok_bot_session", { id, title });
 export const listCursorSessions = () => invoke<LocalSession[]>("list_cursor_sessions");
 export const getCursorSessionMessages = (id: string) => invoke<LocalSessionMessage[]>("get_cursor_session_messages", { id });
 export const deleteCursorSession = (id: string) => invoke<void>("delete_cursor_session", { id });
