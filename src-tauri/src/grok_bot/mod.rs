@@ -4,11 +4,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::Duration,
 };
-
-#[cfg(target_os = "macos")]
-use std::{thread, time::Instant};
 
 #[cfg(target_os = "macos")]
 use aes::Aes128;
@@ -30,9 +26,6 @@ use crate::{
 };
 
 const ACCOUNTS_KEY: &str = "cursor-accounts";
-const QUIT_TIMEOUT: Duration = Duration::from_secs(15);
-#[cfg(target_os = "macos")]
-const POLL_INTERVAL: Duration = Duration::from_millis(150);
 static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize)]
@@ -72,8 +65,6 @@ use windows as platform;
 mod platform {
     use super::*;
     use std::process::Command;
-    const APP_PATH: &str = "/Applications/Grok Bot.app";
-    const APP_NAME: &str = "Grok Bot";
     const SAFE_STORAGE_SERVICE: &str = "Grok Bot Safe Storage";
 
     pub(crate) fn data_path() -> Result<PathBuf> {
@@ -82,11 +73,7 @@ mod platform {
             .ok_or_else(|| AppError::Message("无法读取用户目录。".into()))
     }
     pub(crate) fn ensure_installed() -> Result<()> {
-        if Path::new(APP_PATH).is_dir() {
-            Ok(())
-        } else {
-            Err(AppError::Message("未安装 Grok Bot。".into()))
-        }
+        crate::desktop::ensure_installed(crate::desktop::DesktopApp::GrokBot)
     }
     fn keychain_password() -> Result<String> {
         let output = Command::new("security")
@@ -115,28 +102,13 @@ mod platform {
         ))
     }
     pub(crate) fn is_running() -> bool {
-        Command::new("pgrep")
-            .args(["-x", APP_NAME])
-            .status()
-            .is_ok_and(|s| s.success())
+        crate::desktop::is_running(crate::desktop::DesktopApp::GrokBot)
     }
     pub(crate) fn launch() -> Result<()> {
-        ensure_installed()?;
-        Command::new("open")
-            .args(["-a", APP_NAME])
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| AppError::Message(format!("无法启动 Grok Bot: {e}")))
+        crate::desktop::launch(crate::desktop::DesktopApp::GrokBot)
     }
     pub(crate) fn quit_and_wait() -> Result<()> {
-        let status = Command::new("osascript")
-            .args(["-e", "tell application \"Grok Bot\" to quit"])
-            .status()
-            .map_err(|e| AppError::Message(format!("无法正常退出 Grok Bot: {e}")))?;
-        if !status.success() {
-            return Err(AppError::Message("Grok Bot 未能接受正常退出请求。".into()));
-        }
-        wait_until_stopped()
+        crate::desktop::quit_and_wait(crate::desktop::DesktopApp::GrokBot)
     }
 }
 
@@ -328,69 +300,6 @@ fn decrypt_os_crypt_windows(encoded: &str, key: &[u8; 32]) -> Result<String> {
         .map_err(|_| AppError::Message("Grok Bot 密文不是有效文本。".into()))
 }
 
-#[cfg(any(target_os = "windows", test))]
-fn parse_lnk_target(data: &[u8]) -> Option<PathBuf> {
-    if data.len() < 0x4C || u32::from_le_bytes(data[0..4].try_into().ok()?) != 0x4C {
-        return None;
-    }
-    let flags = u32::from_le_bytes(data[0x14..0x18].try_into().ok()?);
-    let mut offset = 0x4Cusize;
-    if flags & 0x01 != 0 {
-        if data.len() < offset + 2 {
-            return None;
-        }
-        let idlist_size = u16::from_le_bytes(data[offset..offset + 2].try_into().ok()?) as usize;
-        offset = offset.checked_add(2)?.checked_add(idlist_size)?;
-    }
-    if flags & 0x02 == 0 || data.len() < offset + 0x1C {
-        return None;
-    }
-    let info_size = u32::from_le_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
-    let header_size = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().ok()?) as usize;
-    let info_end = offset.checked_add(info_size)?;
-    if info_size < 0x1C || data.len() < info_end {
-        return None;
-    }
-    if header_size >= 0x24 {
-        let unicode_offset =
-            u32::from_le_bytes(data[offset + 0x1C..offset + 0x20].try_into().ok()?) as usize;
-        if unicode_offset > 0 {
-            if let Some(path) = read_wide_cstring(&data[offset..info_end], unicode_offset) {
-                return Some(path);
-            }
-        }
-    }
-    let ansi_offset = u32::from_le_bytes(data[offset + 0x10..offset + 0x14].try_into().ok()?) as usize;
-    read_ansi_cstring(&data[offset..info_end], ansi_offset)
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn read_ansi_cstring(info: &[u8], start: usize) -> Option<PathBuf> {
-    let bytes = info.get(start..)?;
-    let end = bytes.iter().position(|&b| b == 0)?;
-    if end == 0 {
-        return None;
-    }
-    Some(PathBuf::from(String::from_utf8_lossy(&bytes[..end]).into_owned()))
-}
-
-#[cfg(any(target_os = "windows", test))]
-fn read_wide_cstring(info: &[u8], start: usize) -> Option<PathBuf> {
-    let bytes = info.get(start..)?;
-    if bytes.len() < 2 {
-        return None;
-    }
-    let words: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .take_while(|word| *word != 0)
-        .collect();
-    if words.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(String::from_utf16_lossy(&words)))
-}
-
 fn write_json_file(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -408,20 +317,6 @@ fn write_json_file(path: &Path, value: &Value) -> Result<()> {
         let _ = fs::remove_file(&temp);
     }
     result
-}
-
-#[cfg(target_os = "macos")]
-fn wait_until_stopped() -> Result<()> {
-    let deadline = Instant::now() + QUIT_TIMEOUT;
-    while Instant::now() < deadline {
-        if !platform::is_running() {
-            return Ok(());
-        }
-        thread::sleep(POLL_INTERVAL);
-    }
-    Err(AppError::Message(
-        "Grok Bot 未在等待时间内退出，未修改登录会话。".into(),
-    ))
 }
 
 fn session_target(session: &Session, root: &Value) -> Result<SessionTarget> {
@@ -707,7 +602,10 @@ mod tests {
     fn parse_lnk_reads_ansi_local_base_path() {
         let target = r"D:\GrokBot\Grok Bot\Grok Bot.exe";
         let bytes = minimal_lnk(target);
-        assert_eq!(parse_lnk_target(&bytes).as_deref(), Some(Path::new(target)));
+        assert_eq!(
+            crate::desktop::parse_lnk_target(&bytes).as_deref(),
+            Some(Path::new(target))
+        );
     }
 
     #[test]
@@ -721,12 +619,6 @@ mod tests {
         assert!(!process_name_matches_for_test(&other, "Grok Bot.exe"));
     }
 
-    #[cfg(target_os = "windows")]
-    fn process_name_matches_for_test(wide: &[u16], expected: &str) -> bool {
-        windows::process_name_matches(wide, expected)
-    }
-
-    #[cfg(not(target_os = "windows"))]
     fn process_name_matches_for_test(wide: &[u16], expected: &str) -> bool {
         let end = wide.iter().position(|&unit| unit == 0).unwrap_or(wide.len());
         String::from_utf16_lossy(&wide[..end]).eq_ignore_ascii_case(expected)
@@ -744,7 +636,7 @@ mod tests {
         if !path.is_file() {
             return;
         }
-        let target = parse_lnk_target(&fs::read(&path).expect("read shortcut"))
+        let target = crate::desktop::parse_lnk_target(&fs::read(&path).expect("read shortcut"))
             .expect("parse Grok Bot shortcut");
         assert_eq!(
             target.file_name().and_then(|name| name.to_str()),
@@ -757,7 +649,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn toolhelp_process_scan_does_not_panic() {
-        let _ = windows::is_running();
+        let _ = crate::desktop::is_running(crate::desktop::DesktopApp::GrokBot);
     }
 
     #[cfg(target_os = "windows")]

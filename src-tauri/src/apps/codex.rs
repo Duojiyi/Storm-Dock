@@ -150,10 +150,6 @@ impl ApplicationAdapter for CodexAdapter {
         }
         Err(AppError::VerifyFailed)
     }
-
-    fn is_running(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]

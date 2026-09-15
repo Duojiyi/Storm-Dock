@@ -2,6 +2,9 @@ use std::{thread, time::Duration};
 
 use crate::cursor::session::{jwt_claims, session_user_id};
 use crate::error::{AppError, Result};
+use crate::http::{
+    Body, Budget, Call, Client, HttpError, Retry, SUBSCRIPTION_BUDGET, USAGE_BUDGET,
+};
 use crate::models::{now, parse_timestamp, Session, SubscriptionSummary, ACCESS_TOKEN_KEY};
 
 const CURSOR_SUBSCRIPTION_URL: &str = "https://api2.cursor.sh/auth/full_stripe_profile";
@@ -136,38 +139,35 @@ fn cursor_connect_request(session: &Session, method: &str, body: &[u8]) -> Resul
         .values
         .get(ACCESS_TOKEN_KEY)
         .ok_or(AppError::SecretMissing)?;
-    let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|error| AppError::Message(format!("无法创建 Cursor 插件请求: {error}")))?
-        .post(format!(
-            "{CURSOR_CONNECT_URL}/aiserver.v1.DashboardService/{method}"
-        ))
-        .bearer_auth(token)
-        .header("Content-Type", "application/proto")
-        .header("Accept", "application/proto")
-        .header("Connect-Protocol-Version", "1")
-        .header("X-Ghost-Mode", "false")
-        .body(body.to_vec())
-        .send()
-        .map_err(|error| AppError::Message(format!("Cursor 插件请求失败: {error}")))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .map_err(|error| AppError::Message(format!("无法读取 Cursor 插件响应: {error}")))?
-        .to_vec();
-    if status.as_u16() == 401 || status.as_u16() == 403 {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: format!("{CURSOR_CONNECT_URL}/aiserver.v1.DashboardService/{method}"),
+            headers: vec![
+                ("Authorization".into(), format!("Bearer {token}")),
+                ("Content-Type".into(), "application/proto".into()),
+                ("Accept".into(), "application/proto".into()),
+                ("Connect-Protocol-Version".into(), "1".into()),
+                ("X-Ghost-Mode".into(), "false".into()),
+            ],
+            query: Vec::new(),
+            body: Body::Bytes(body.to_vec()),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if matches!(response.status, 401 | 403) {
         return Err(AppError::Message(
             "Cursor 登录已失效，请在 Cursor 中重新登录后重试。".into(),
         ));
     }
-    if !status.is_success() {
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
             "Cursor 插件请求失败（HTTP {}）。",
-            status
+            response.status
         )));
     }
-    Ok(bytes)
+    Ok(response.bytes)
 }
 
 struct ProtobufField<'a> {
@@ -329,42 +329,46 @@ pub(crate) fn merge_subscription(
 }
 
 pub(crate) fn fetch_stripe_profile(session: &Session) -> Result<serde_json::Value> {
+    fetch_stripe_profile_with(session, &Budget::new(USAGE_BUDGET), Retry::Transient)
+}
+
+pub(crate) fn fetch_stripe_profile_with(
+    session: &Session,
+    budget: &Budget,
+    retry: Retry,
+) -> Result<serde_json::Value> {
     let token = session
         .values
         .get(ACCESS_TOKEN_KEY)
         .ok_or(AppError::SecretMissing)?;
-    let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|error| {
-            AppError::Message(format!(
-                "could not prepare Cursor subscription refresh: {error}"
-            ))
-        })?
-        .get(CURSOR_SUBSCRIPTION_URL)
-        .bearer_auth(token)
-        .send()
-        .map_err(|error| {
-            AppError::Message(format!("could not refresh Cursor subscription: {error}"))
-        })?;
-    if matches!(response.status().as_u16(), 401 | 403) {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: CURSOR_SUBSCRIPTION_URL.into(),
+            headers: vec![("Authorization".into(), format!("Bearer {token}"))],
+            query: Vec::new(),
+            body: Body::Empty,
+        },
+        budget,
+        retry,
+    )?;
+    if matches!(response.status, 401 | 403) {
         return Err(AppError::Message(
             "Cursor 登录已失效，请在 Cursor 中重新登录后重新导入账号。".into(),
         ));
     }
-    let response = response.error_for_status().map_err(|error| {
-        AppError::Message(format!("could not refresh Cursor subscription: {error}"))
-    })?;
-    response
-        .json()
-        .map_err(|error| AppError::Message(format!("could not read Cursor subscription: {error}")))
+    if !(200..300).contains(&response.status) {
+        return Err(HttpError::Server.into());
+    }
+    serde_json::from_slice(&response.bytes).map_err(|_| HttpError::Decode.into())
 }
 
 pub(crate) fn fetch_cursor_subscription(session: &Session) -> Result<SubscriptionSummary> {
-    let usage = dashboard_cookie(session)
-        .ok()
-        .and_then(|cookie| dashboard_request(&cookie, "/usage-summary", None).ok());
-    let stripe = fetch_stripe_profile(session);
+    let budget = Budget::new(SUBSCRIPTION_BUDGET);
+    let usage = dashboard_cookie(session).ok().and_then(|cookie| {
+        dashboard_request_with(&cookie, "/usage-summary", None, &budget, Retry::None).ok()
+    });
+    let stripe = fetch_stripe_profile_with(session, &budget, Retry::Transient);
     merge_subscription(
         usage.as_ref().map(subscription_from_response),
         stripe.as_ref().ok().map(subscription_from_response),
@@ -405,46 +409,59 @@ pub(crate) fn dashboard_request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.url().host_str() == Some("cursor.com") && attempt.previous().len() < 5 {
-                attempt.follow()
-            } else {
-                attempt.stop()
-            }
-        }))
-        .build()
-        .map_err(|error| AppError::Message(format!("无法创建 Cursor 用量请求: {error}")))?;
-    let url = format!("{CURSOR_DASHBOARD_URL}{path}");
-    let mut request = match &body {
-        Some(body) => client.post(url).json(body),
-        None => client.get(url),
-    }
-    .header("Cookie", cookie)
-    .header("User-Agent", "Mozilla/5.0")
-    .header("Accept", "*/*");
+    dashboard_request_with(
+        cookie,
+        path,
+        body,
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )
+}
+
+pub(crate) fn dashboard_request_with(
+    cookie: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+    budget: &Budget,
+    retry: Retry,
+) -> Result<serde_json::Value> {
+    let mut headers = vec![
+        ("Cookie".into(), cookie.to_owned()),
+        ("User-Agent".into(), "Mozilla/5.0".into()),
+        ("Accept".into(), "*/*".into()),
+    ];
     if body.is_some() || path.contains("dashboard/") {
-        request = request
-            .header("Origin", "https://cursor.com")
-            .header("Referer", "https://cursor.com/dashboard?tab=usage")
-            .header("Sec-Fetch-Site", "same-origin")
-            .header("Sec-Fetch-Mode", "cors")
-            .header("Sec-Fetch-Dest", "empty");
+        headers.extend([
+            ("Origin".into(), "https://cursor.com".into()),
+            ("Referer".into(), "https://cursor.com/dashboard?tab=usage".into()),
+            ("Sec-Fetch-Site".into(), "same-origin".into()),
+            ("Sec-Fetch-Mode".into(), "cors".into()),
+            ("Sec-Fetch-Dest".into(), "empty".into()),
+        ]);
     }
-    let response = request
-        .send()
-        .map_err(|error| AppError::Message(format!("Cursor 用量查询失败: {error}")))?;
-    let status = response.status().as_u16();
-    let bytes = response
-        .bytes()
-        .map_err(|error| AppError::Message(format!("无法读取 Cursor 用量数据: {error}")))?;
-    if status == 204 || bytes.is_empty() {
+    let has_body = body.is_some();
+    let response = Client::cursor_web().send(
+        &Call {
+            method: if has_body {
+                reqwest::Method::POST
+            } else {
+                reqwest::Method::GET
+            },
+            url: format!("{CURSOR_DASHBOARD_URL}{path}"),
+            headers,
+            query: Vec::new(),
+            body: body.map(Body::Json).unwrap_or(Body::Empty),
+        },
+        budget,
+        retry,
+    )?;
+    let status = response.status;
+    if status == 204 || response.bytes.is_empty() {
         return Err(AppError::Message(
             "Cursor 登录已失效，请在 Cursor 中重新登录后重新导入账户。".into(),
         ));
     }
-    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+    let parsed = serde_json::from_slice::<serde_json::Value>(&response.bytes).ok();
     let api_error = parsed.as_ref().and_then(|value| {
         value
             .get("error")
@@ -459,16 +476,18 @@ pub(crate) fn dashboard_request(
                 "Cursor 登录已失效，请在 Cursor 中重新登录后重新导入账户。".into(),
             ))
         }
-        403 if body.is_none() => {
+        403 if !has_body => {
             return Err(AppError::Message(
                 "Cursor 登录已失效，请在 Cursor 中重新登录后重新导入账户。".into(),
             ))
         }
         status if !(200..300).contains(&status) => {
-            return Err(AppError::Message(format!(
-                "Cursor 用量查询失败（{}）。",
-                api_error.unwrap_or_else(|| format!("HTTP {status}"))
-            )))
+            return Err(match (status, api_error) {
+                (429, None) => HttpError::RateLimited.into(),
+                (500..=599, None) => HttpError::Server.into(),
+                (_, Some(error)) => AppError::Message(format!("Cursor 用量查询失败（{error}）。")),
+                (_, None) => AppError::Message(format!("Cursor 用量查询失败（HTTP {status}）。")),
+            })
         }
         _ => {}
     }
@@ -477,7 +496,7 @@ pub(crate) fn dashboard_request(
             "Cursor 用量查询失败（{error}）。"
         )));
     }
-    parsed.ok_or_else(|| AppError::Message("无法读取 Cursor 用量数据。".into()))
+    parsed.ok_or_else(|| HttpError::Decode.into())
 }
 
 #[cfg(test)]

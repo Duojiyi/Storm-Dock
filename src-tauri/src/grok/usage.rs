@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::error::{AppError, Result};
 use crate::grok::session::{access_token, auth_value};
-use crate::grok::subscription::http_client as grok_http_client;
+use crate::http::{Body, Budget, Call, Client, HttpError, Retry, USAGE_BUDGET};
 use crate::models::{
     now, Account, CursorUsageDetails, Session, UsageEvent, UsageMetric, WeeklyUsageSummary,
 };
@@ -17,24 +17,29 @@ pub(crate) fn fetch_grok_usage(
 ) -> Result<(CursorUsageDetails, Value)> {
     let auth = auth_value(session)?;
     let token = access_token(&auth).ok_or(AppError::SecretMissing)?;
-    let client = grok_http_client()?;
-    let response = client
-        .get(BILLING_URL)
-        .bearer_auth(&token)
-        .header("User-Agent", USER_AGENT)
-        .header("Accept", "application/json")
-        .send()
-        .map_err(|error| AppError::Message(format!("Grok 用量请求失败: {error}")))?;
-    let status = response.status();
-    let body = response.text().unwrap_or_default();
-    if !status.is_success() {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: BILLING_URL.into(),
+            headers: vec![
+                ("Authorization".into(), format!("Bearer {token}")),
+                ("User-Agent".into(), USER_AGENT.into()),
+                ("Accept".into(), "application/json".into()),
+            ],
+            query: Vec::new(),
+            body: Body::Empty,
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "Grok 用量接口失败 ({status}): {}",
-            body.chars().take(160).collect::<String>()
+            "Grok 用量接口失败 ({}): {}",
+            response.status,
+            response.text().chars().take(160).collect::<String>()
         )));
     }
-    let raw: Value = serde_json::from_str(&body)
-        .map_err(|error| AppError::Message(format!("Grok 用量响应无效: {error}")))?;
+    let raw: Value = response.json().map_err(|_| HttpError::Decode)?;
     let details = usage_from_billing(account, &raw, account.subscription.plan.clone())?;
     Ok((details, raw))
 }

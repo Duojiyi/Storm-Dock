@@ -2,8 +2,9 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import * as Progress from "@radix-ui/react-progress";
-import { Activity, Check, ChartNoAxesCombined, Copy, FileOutput, GripVertical, KeyRound, LogIn, Pencil, RefreshCw, Trash2, UserRound, Zap } from "lucide-react";
+import { Activity, ChartNoAxesCombined, Copy, FileOutput, GripVertical, KeyRound, LogIn, Pencil, RefreshCw, Trash2, UserRound, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { CurrentLaunchBadge } from "../../../components/CurrentLaunchBadge";
 import { Tooltip } from "../../../components/Tooltip";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
 import { canSwitchToDesktop, editAccountPath, type Account, type ApplicationKind } from "../../../lib/types";
@@ -23,11 +24,12 @@ type Props = {
   testingId?: string;
   onRemove: (account: Account) => void;
   onSwitch: (account: Account) => void;
+  onLaunchCurrent?: (account: Account) => void;
   onLaunchBot: (account: Account) => void;
   onReorder: (activeId: string, targetId?: string) => void;
 };
 
-function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport, onRemove, onSwitch, onLaunchBot, onTest, progress }: Omit<Props, "accounts" | "onReorder"> & { account: Account }) {
+function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport, onRemove, onSwitch, onLaunchCurrent, onLaunchBot, onTest, progress }: Omit<Props, "accounts" | "onReorder"> & { account: Account }) {
   const { t } = useTranslation();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ disabled: busy, id: account.id });
   const subscription = subscriptionLabel(account, t);
@@ -51,7 +53,7 @@ function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport
       {account.status === "missing" && <span className={styles.missingBadge}>{t("credentialMissing", { defaultValue: "凭证缺失" })}</span>}
     </div></div>
     <div className={styles.accountActions}>
-      {progress ? <div className={styles.progress}><span>{t(`switchStages.${progress.stage}`)}</span><Progress.Root aria-label={t("switchProgress")} className={styles.progressRoot} value={progress.percent}><Progress.Indicator className={progress.status === "error" ? styles.progressError : styles.progressIndicator} style={{ transform: `translateX(-${100 - progress.percent}%)` }} /></Progress.Root></div> : isActive ? <span className={styles.currentBadge}><Check aria-hidden="true" size={16} />{t("current")}</span> : canSwitchToDesktop(account) ? <button className={styles.activate} disabled={busy} onClick={() => onSwitch(account)} type="button"><LogIn aria-hidden="true" size={17} />{t("switch")}</button> : null}
+      {progress ? <div className={styles.progress}><span>{t(`switchStages.${progress.stage}`)}</span><Progress.Root aria-label={t("switchProgress")} className={styles.progressRoot} value={progress.percent}><Progress.Indicator className={progress.status === "error" ? styles.progressError : styles.progressIndicator} style={{ transform: `translateX(-${100 - progress.percent}%)` }} /></Progress.Root></div> : isActive ? <CurrentLaunchBadge busy={busy} onLaunch={(kind === "cursor" || kind === "codex") && onLaunchCurrent ? () => onLaunchCurrent(account) : undefined} /> : canSwitchToDesktop(account) ? <button className={styles.activate} disabled={busy} onClick={() => onSwitch(account)} type="button"><LogIn aria-hidden="true" size={17} />{t("switch")}</button> : null}
       {progress?.status === "error" && canSwitchToDesktop(account) && <button className={styles.activate} onClick={() => onSwitch(account)} type="button"><RefreshCw aria-hidden="true" size={16} />{t("retry")}</button>}
       {canLaunchBot && <Tooltip content={account.isGrokBotCurrent ? t("grokBotCurrent") : t("launchGrokBot")}><button aria-label={account.isGrokBotCurrent ? t("grokBotCurrent") : t("launchGrokBot")} className={`${styles.iconButton} ${styles.grokBotButton}`} disabled={busy} onClick={() => onLaunchBot(account)} type="button"><img alt="" aria-hidden="true" className={styles.grokBotIcon} src={grokBotIcon} />{account.isGrokBotCurrent && <span className={styles.grokBotCurrentBadge} aria-hidden="true"><Zap size={9} strokeWidth={2.6} /></span>}</button></Tooltip>}
       {isApiKey ? <>

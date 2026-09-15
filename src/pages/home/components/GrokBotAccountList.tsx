@@ -1,8 +1,9 @@
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Check, ChartNoAxesCombined, FileOutput, GripVertical, Trash2, Zap } from "lucide-react";
+import { ChartNoAxesCombined, FileOutput, GripVertical, Trash2, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { CurrentLaunchBadge } from "../../../components/CurrentLaunchBadge";
 import { Tooltip } from "../../../components/Tooltip";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
 import type { Account } from "../../../lib/types";
@@ -81,10 +82,7 @@ function SortableAccount({
       </div>
       <div className={styles.accountActions}>
         {isActive ? (
-          <span className={styles.currentBadge}>
-            <Check aria-hidden="true" size={16} />
-            {t("current")}
-          </span>
+          <CurrentLaunchBadge busy={busy} onLaunch={() => onLaunchBot(account)} />
         ) : null}
         <Tooltip content={launchable ? (isActive ? t("grokBotCurrent") : t("launchGrokBot")) : t("grokBotFreeNotLaunchable")}>
           <button

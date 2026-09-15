@@ -1,12 +1,9 @@
 use rusqlite::{params, Connection};
-use std::{collections::BTreeMap, env, fs, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 use crate::apps::ApplicationAdapter;
 use crate::error::{AppError, Result};
 use crate::models::{ApplicationKind, ApplicationStatus, Session, ACCESS_TOKEN_KEY, CURSOR_KEYS};
-
-#[cfg(target_os = "windows")]
-mod cursor_windows;
 
 pub(crate) struct CursorAdapter {
     pub(crate) database: Option<PathBuf>,
@@ -210,80 +207,6 @@ impl ApplicationAdapter for CursorAdapter {
             .map_err(|_| AppError::RestoreFailed)?;
         Err(AppError::VerifyFailed)
     }
-
-    fn is_running(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("pgrep")
-                .args(["-x", "Cursor"])
-                .output()
-                .is_ok_and(|output| output.status.success())
-        }
-        #[cfg(target_os = "windows")]
-        {
-            cursor_windows::is_running()
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            false
-        }
-    }
-}
-
-pub(crate) fn launch_cursor() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("open")
-            .args(["-a", "Cursor"])
-            .status();
-        return match status {
-            Ok(status) if status.success() => Ok(()),
-            _ => Err(AppError::Message(
-                "无法启动 Cursor，请确认应用已安装。".into(),
-            )),
-        };
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return cursor_windows::launch();
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        Err(AppError::Message(
-            "无法启动 Cursor，请确认应用已安装。".into(),
-        ))
-    }
-}
-
-pub(crate) fn terminate_cursor() -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("pkill")
-            .args(["-x", "Cursor"])
-            .status();
-        return match status {
-            Ok(status) if status.success() => Ok(()),
-            _ => Err(AppError::Message("无法结束 Cursor 进程。".into())),
-        };
-    }
-    #[cfg(target_os = "windows")]
-    {
-        return cursor_windows::terminate();
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        Err(AppError::Message("无法结束 Cursor 进程。".into()))
-    }
-}
-
-pub(crate) fn wait_for_cursor_stop() -> Result<()> {
-    for _ in 0..50 {
-        if !CursorAdapter::default().is_running() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    Err(AppError::Message("Cursor 未在 5 秒内退出。".into()))
 }
 
 #[cfg(test)]

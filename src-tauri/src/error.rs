@@ -36,6 +36,8 @@ pub(crate) enum AppError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Http(#[from] crate::http::HttpError),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, AppError>;

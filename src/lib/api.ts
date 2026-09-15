@@ -18,6 +18,8 @@ export const listCodexSessions = () => invoke<CodexSession[]>("list_codex_sessio
 export const getCodexSessionMessages = (id: string) => invoke<CodexSessionMessage[]>("get_codex_session_messages", { id });
 export const deleteCodexSession = (id: string) => invoke<void>("delete_codex_session", { id });
 export const deleteCodexSessions = (ids: string[]) => invoke<SessionDeleteBatchResult>("delete_codex_sessions", { ids });
+export const launchCursor = () => invoke<void>("launch_cursor");
+export const launchChatgpt = () => invoke<void>("launch_chatgpt");
 export const launchCodexSession = (id: string) => invoke("launch_codex_session", { id });
 export const listGrokSessions = () => invoke<LocalSession[]>("list_grok_sessions");
 export const getGrokSessionMessages = (id: string) => invoke<LocalSessionMessage[]>("get_grok_session_messages", { id });

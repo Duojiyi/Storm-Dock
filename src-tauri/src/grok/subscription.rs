@@ -1,9 +1,8 @@
-use std::time::Duration;
-
 use serde_json::Value;
 
 use crate::error::{AppError, Result};
 use crate::grok::session::{access_token, auth_value};
+use crate::http::{Body, Budget, Call, Client, HttpError, Retry, USAGE_BUDGET};
 use crate::models::{now, Session, SubscriptionSummary};
 
 const USER_AGENT: &str = "storm-dock-grok-subscription";
@@ -15,25 +14,29 @@ const USER_SUBSCRIPTION_URL: &str =
 pub(crate) fn fetch_grok_subscription(session: &Session) -> Result<SubscriptionSummary> {
     let auth = auth_value(session)?;
     let token = access_token(&auth).ok_or(AppError::SecretMissing)?;
-    let client = http_client()?;
-
-    let response = client
-        .get(USER_SUBSCRIPTION_URL)
-        .bearer_auth(&token)
-        .header("User-Agent", USER_AGENT)
-        .header("Accept", "application/json")
-        .send()
-        .map_err(|error| AppError::Message(format!("Grok 订阅请求失败: {error}")))?;
-    let status = response.status();
-    let body = response.text().unwrap_or_default();
-    if !status.is_success() {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: USER_SUBSCRIPTION_URL.into(),
+            headers: vec![
+                ("Authorization".into(), format!("Bearer {token}")),
+                ("User-Agent".into(), USER_AGENT.into()),
+                ("Accept".into(), "application/json".into()),
+            ],
+            query: Vec::new(),
+            body: Body::Empty,
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "Grok 订阅接口失败 ({status}): {}",
-            body.chars().take(160).collect::<String>()
+            "Grok 订阅接口失败 ({}): {}",
+            response.status,
+            response.text().chars().take(160).collect::<String>()
         )));
     }
-    let value: Value = serde_json::from_str(&body)
-        .map_err(|error| AppError::Message(format!("Grok 订阅响应无效: {error}")))?;
+    let value: Value = response.json().map_err(|_| HttpError::Decode)?;
     subscription_from_grok_payload(&value)
         .ok_or_else(|| AppError::Message("Grok 订阅响应缺少 tier/plan。".into()))
 }
@@ -113,87 +116,6 @@ pub(crate) fn normalize_grok_tier(tier: &str) -> String {
         "x_premium_plus" | "xpremium_plus" => "x_premium_plus".into(),
         other => other.to_owned(),
     }
-}
-
-pub(crate) fn http_client() -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::Client::builder().timeout(Duration::from_secs(12));
-    if let Some(proxy_url) = env_proxy_url() {
-        if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
-            builder = builder.proxy(proxy);
-        }
-    }
-    builder
-        .build()
-        .map_err(|error| AppError::Message(error.to_string()))
-}
-
-fn env_proxy_url() -> Option<String> {
-    for key in [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-    ] {
-        if let Ok(value) = std::env::var(key) {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_owned());
-            }
-        }
-    }
-    macos_system_proxy_url()
-}
-
-#[cfg(target_os = "macos")]
-fn macos_system_proxy_url() -> Option<String> {
-    let output = std::process::Command::new("scutil")
-        .arg("--proxy")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut https_enable = false;
-    let mut http_enable = false;
-    let mut https_host = None::<String>;
-    let mut https_port = None::<String>;
-    let mut http_host = None::<String>;
-    let mut http_port = None::<String>;
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(value) = line.strip_prefix("HTTPSEnable : ") {
-            https_enable = value.trim() == "1";
-        } else if let Some(value) = line.strip_prefix("HTTPEnable : ") {
-            http_enable = value.trim() == "1";
-        } else if let Some(value) = line.strip_prefix("HTTPSProxy : ") {
-            https_host = Some(value.trim().to_owned());
-        } else if let Some(value) = line.strip_prefix("HTTPSPort : ") {
-            https_port = Some(value.trim().to_owned());
-        } else if let Some(value) = line.strip_prefix("HTTPProxy : ") {
-            http_host = Some(value.trim().to_owned());
-        } else if let Some(value) = line.strip_prefix("HTTPPort : ") {
-            http_port = Some(value.trim().to_owned());
-        }
-    }
-    if https_enable {
-        if let (Some(host), Some(port)) = (https_host, https_port) {
-            return Some(format!("http://{host}:{port}"));
-        }
-    }
-    if http_enable {
-        if let (Some(host), Some(port)) = (http_host, http_port) {
-            return Some(format!("http://{host}:{port}"));
-        }
-    }
-    None
-}
-
-#[cfg(not(target_os = "macos"))]
-fn macos_system_proxy_url() -> Option<String> {
-    None
 }
 
 #[cfg(test)]

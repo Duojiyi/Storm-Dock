@@ -14,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::cursor::api::{dashboard_cookie, dashboard_request, fetch_cursor_subscription};
 use crate::cursor::session::jwt_claims;
 use crate::error::{AppError, Result};
+use crate::http::{Body, Budget, Call, Client, HttpError, HttpResponse, Retry, USAGE_BUDGET};
 use crate::models::{
     json_text, Account, ApplicationKind, ImportType, Session, SubscriptionSummary,
     ACCESS_TOKEN_KEY, EMAIL_KEY, MEMBERSHIP_TYPE_KEY,
@@ -178,17 +179,13 @@ pub(crate) fn poll_cursor_oauth(
     login_id: u64,
     app: &AppHandle,
 ) -> Result<serde_json::Value> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .map_err(|error| AppError::Message(format!("无法创建 Cursor 登录请求: {error}")))?;
     let mut delay = Duration::from_secs(1);
     let mut consecutive_errors = 0;
     for _ in 0..CURSOR_OAUTH_POLL_ATTEMPTS {
         if !app.state::<OauthLoginState>().is_active(login_id) {
             return Err(AppError::LoginCancelled);
         }
-        match poll_cursor_oauth_once(&client, handshake) {
+        match poll_cursor_oauth_once(handshake) {
             Ok(Some(value)) => return Ok(value),
             Ok(None) => {
                 consecutive_errors = 0;
@@ -210,50 +207,56 @@ pub(crate) fn poll_cursor_oauth(
 }
 
 pub(crate) fn poll_cursor_oauth_once(
-    client: &reqwest::blocking::Client,
     handshake: &CursorOauthHandshake,
 ) -> Result<Option<serde_json::Value>> {
-    if let Ok(post) = client
-        .post(CURSOR_OAUTH_POLL_URL)
-        .header("User-Agent", "Storm Dock")
-        .json(&serde_json::json!({
-            "uuid": handshake.uuid,
-            "verifier": handshake.verifier,
-        }))
-        .send()
-    {
-        if post.status().is_success() {
+    let budget = Budget::new(USAGE_BUDGET);
+    let headers = vec![("User-Agent".into(), "Storm Dock".into())];
+    if let Ok(post) = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: CURSOR_OAUTH_POLL_URL.into(),
+            headers: headers.clone(),
+            query: Vec::new(),
+            body: Body::Json(serde_json::json!({
+                "uuid": handshake.uuid,
+                "verifier": handshake.verifier,
+            })),
+        },
+        &budget,
+        Retry::None,
+    ) {
+        if (200..300).contains(&post.status) {
             return read_oauth_poll_response(post);
         }
     }
-    let get = client
-        .get(CURSOR_OAUTH_POLL_URL)
-        .query(&[
-            ("uuid", handshake.uuid.as_str()),
-            ("verifier", handshake.verifier.as_str()),
-        ])
-        .header("User-Agent", "Storm Dock")
-        .send()
-        .map_err(|error| AppError::Message(format!("Cursor 登录轮询失败: {error}")))?;
-    if get.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
+    let get = Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: CURSOR_OAUTH_POLL_URL.into(),
+            headers,
+            query: vec![
+                ("uuid".into(), handshake.uuid.clone()),
+                ("verifier".into(), handshake.verifier.clone()),
+            ],
+            body: Body::Empty,
+        },
+        &budget,
+        Retry::None,
+    )?;
     read_oauth_poll_response(get)
 }
 
 pub(crate) fn read_oauth_poll_response(
-    response: reqwest::blocking::Response,
+    response: HttpResponse,
 ) -> Result<Option<serde_json::Value>> {
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
+    if response.status == 404 {
         return Ok(None);
     }
-    let value: serde_json::Value = response
-        .json()
-        .map_err(|error| AppError::Message(format!("Cursor 登录响应无效: {error}")))?;
-    if !status.is_success() {
+    let value: serde_json::Value = response.json().map_err(|_| HttpError::Decode)?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "Cursor 登录轮询失败 (HTTP {status})"
+            "Cursor 登录轮询失败 (HTTP {})",
+            response.status
         )));
     }
     Ok(Some(value))

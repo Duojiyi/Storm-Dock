@@ -1,26 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
-import {
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  arrayMove,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { arrayMove } from "@dnd-kit/sortable";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import * as Progress from "@radix-ui/react-progress";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
-  Check,
-  ChartNoAxesCombined,
   CheckSquare,
   ChevronDown,
   ChevronRight,
@@ -28,11 +10,8 @@ import {
   ChevronsUpDown,
   Clock3,
   Download,
-  FileOutput,
   FolderOpen,
-  GripVertical,
   KeyRound,
-  LogIn,
   MessageSquareText,
   Play,
   Plus,
@@ -40,7 +19,6 @@ import {
   RefreshCw,
   Search,
   Settings,
-  Trash2,
   UserRound,
   Waypoints,
   X,
@@ -89,7 +67,9 @@ import {
   getCursorUsage,
   getGrokBotStatus,
   getGrokSessionMessages,
+  launchChatgpt,
   launchCodexSession,
+  launchCursor,
   launchGrokSession,
   listAccounts,
   getGrokBotExportRecord,
@@ -126,11 +106,6 @@ import {
 } from "../../lib/types";
 import "../../styles/global.css";
 import styles from "./page.module.css";
-import {
-  canLaunchGrokBot,
-  subscriptionLabel,
-  usageLabel,
-} from "./lib/accountPresentation";
 import {
   filterSessions,
   formatRelativeSessionTime,
@@ -236,154 +211,6 @@ function legacyFormatRelativeSessionTime(
   return new Date(timestamp).toLocaleDateString();
 }
 
-function LegacySortableAccount({
-  account,
-  busy,
-  onExport,
-  onRemove,
-  onSwitch,
-  progress,
-}: {
-  account: Account;
-  busy: boolean;
-  onExport: (account: Account) => void;
-  onRemove: (account: Account) => void;
-  onSwitch: (account: Account) => void;
-  progress?: SwitchProgress;
-}) {
-  const { t } = useTranslation();
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ disabled: busy, id: account.id });
-  return (
-    <article
-      className={`${styles.accountCard} ${account.isCurrent ? styles.current : ""} ${isDragging ? styles.dragging : ""}`}
-      ref={setNodeRef}
-      style={{ transform: CSS.Transform.toString(transform), transition }}
-    >
-      <GripVertical
-        className={styles.dragHandle}
-        aria-label={t("drag", { account: account.label })}
-        size={24}
-        {...attributes}
-        {...listeners}
-      />
-      <div className={styles.accountCopy}>
-        <strong>{account.label}</strong>
-        <div className={styles.accountMeta}>
-          {(() => {
-            const subscription = subscriptionLabel(account, t);
-            return (
-              subscription && (
-                <span
-                  className={`${styles.metaBadge} ${styles[`plan-${subscription.plan}`] ?? styles.planDefault}`}
-                >
-                  {subscription.name} · {subscription.expiry}
-                </span>
-              )
-            );
-          })()}
-          {(() => {
-            const usage = usageLabel(account, t);
-            return usage && <span className={styles.metaBadge}>{usage}</span>;
-          })()}
-          {account.status === "invalid" && (
-            <span className={styles.invalidBadge}>
-              {t("tokenInvalid", { defaultValue: "Token已失效" })}
-            </span>
-          )}
-          {account.status === "missing" && (
-            <span className={styles.missingBadge}>
-              {t("credentialMissing", { defaultValue: "凭证缺失" })}
-            </span>
-          )}
-        </div>
-      </div>
-      <div className={styles.accountActions}>
-        {progress ? (
-          <div className={styles.progress}>
-            <span>{t(`switchStages.${progress.stage}`)}</span>
-            <Progress.Root
-              aria-label={t("switchProgress")}
-              className={styles.progressRoot}
-              value={progress.percent}
-            >
-              <Progress.Indicator
-                className={
-                  progress.status === "error"
-                    ? styles.progressError
-                    : styles.progressIndicator
-                }
-                style={{ transform: `translateX(-${100 - progress.percent}%)` }}
-              />
-            </Progress.Root>
-          </div>
-        ) : account.isCurrent ? (
-          <span className={styles.currentBadge}>
-            <Check aria-hidden="true" size={16} />
-            {t("current")}
-          </span>
-        ) : canSwitchToDesktop(account) ? (
-          <button
-            className={styles.activate}
-            disabled={busy}
-            onClick={() => onSwitch(account)}
-            type="button"
-          >
-            <LogIn aria-hidden="true" size={17} />
-            {t("switch")}
-          </button>
-        ) : null}
-        {progress?.status === "error" && canSwitchToDesktop(account) && (
-          <button
-            className={styles.activate}
-            onClick={() => onSwitch(account)}
-            type="button"
-          >
-            <RefreshCw aria-hidden="true" size={16} />
-            {t("retry")}
-          </button>
-        )}
-        <Tooltip content={t("usage")}>
-          <a
-            aria-label={t("viewUsage", { account: account.label })}
-            className={styles.iconButton}
-            href={`/usage.html?accountId=${encodeURIComponent(account.id)}`}
-          >
-            <ChartNoAxesCombined aria-hidden="true" size={18} />
-          </a>
-        </Tooltip>
-        <Tooltip content={t("export")}>
-          <button
-            aria-label={t("exportAccount", { account: account.label })}
-            className={styles.iconButton}
-            disabled={busy}
-            onClick={() => onExport(account)}
-            type="button"
-          >
-            <FileOutput aria-hidden="true" size={18} />
-          </button>
-        </Tooltip>
-        <Tooltip content={t("delete")}>
-          <button
-            aria-label={t("remove", { account: account.label })}
-            className={styles.iconButton}
-            disabled={busy}
-            onClick={() => onRemove(account)}
-            type="button"
-          >
-            <Trash2 aria-hidden="true" size={19} />
-          </button>
-        </Tooltip>
-      </div>
-    </article>
-  );
-}
 
 function LegacyWorkspaceToolbar({
   section,
@@ -563,16 +390,10 @@ export function HomePage() {
   const beginAccountsRequest = useLatestRequest();
   const knownSessionProjects = useRef(new Set<string>());
   const beginSessionMessageRequest = useLatestRequest();
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
-  );
   const isCursor = selected === "cursor";
   useLayoutEffect(() => {
-    syncDocumentAppKind(selected);
-  }, [selected]);
+    syncDocumentAppKind(grokBotMode ? "grokBot" : selected);
+  }, [grokBotMode, selected]);
   const showError = useCallback(
     (error: unknown) =>
       setNotice(error instanceof Error ? error.message : String(error)),
@@ -782,7 +603,7 @@ export function HomePage() {
   };
   const finishSwitch = async (noticeKey: string) => {
     await loadAccounts();
-    setNotice(t(noticeKey));
+    setNotice(t(noticeKey, { application: t(selected) }));
     window.setTimeout(clearSwitch, 500);
   };
   const switchTo = async (account: Account) => {
@@ -805,7 +626,7 @@ export function HomePage() {
         setCountdown(10);
         return;
       }
-      await finishSwitch(isCursor ? "cursorLaunched" : "accountSwitched");
+      await finishSwitch(isCursor ? "cursorLaunched" : selected === "codex" ? "chatgptLaunched" : "accountSwitched");
     } catch (error) {
       showError(error);
       setSwitchProgress({
@@ -815,6 +636,19 @@ export function HomePage() {
         percent: 100,
         status: "error",
       });
+      setBusy(false);
+    }
+  };
+  const launchCurrentApp = async () => {
+    if (busy || (selected !== "cursor" && selected !== "codex")) return;
+    setBusy(true);
+    try {
+      if (selected === "codex") await launchChatgpt();
+      else await launchCursor();
+      setNotice(t("appLaunched"));
+    } catch (error) {
+      showError(error);
+    } finally {
       setBusy(false);
     }
   };
@@ -871,11 +705,11 @@ export function HomePage() {
       status: "running",
     });
     try {
-      await invoke("force_restart_cursor", {
+      await invoke("force_restart", {
         id: dialog.account.id,
         operationId: dialog.operationId,
       });
-      await finishSwitch("cursorRestarted");
+      await finishSwitch("appRestarted");
     } catch (error) {
       showError(error);
       setSwitchProgress({
@@ -1301,6 +1135,7 @@ export function HomePage() {
           onDuplicate={(account) => void duplicateAccount(account)}
           onExport={(account) => void openAccountExport(account)}
           onLaunchBot={(account) => void launchBot(account)}
+          onLaunchCurrent={() => void launchCurrentApp()}
           onRemove={remove}
           onReorder={(activeId, targetId) => void reorder(activeId, targetId)}
           onSwitch={switchTo}
@@ -1448,11 +1283,11 @@ export function HomePage() {
         <AlertDialog.Portal>
           <AlertDialog.Overlay className={styles.dialogOverlay} />
           <AlertDialog.Content className={styles.dialogContent}>
-            <AlertDialog.Title>{t("restartDialogTitle")}</AlertDialog.Title>
+            <AlertDialog.Title>{t("restartDialogTitle", { application: t(selected) })}</AlertDialog.Title>
             <AlertDialog.Description>
-              {t("restartDialogDescription")}
+              {t("restartDialogDescription", { application: t(selected) })}
             </AlertDialog.Description>
-            <p className={styles.dialogWarning}>{t("restartDialogWarning")}</p>
+            <p className={styles.dialogWarning}>{t("restartDialogWarning", { application: t(selected) })}</p>
             <div className={styles.dialogActions}>
               <AlertDialog.Cancel asChild>
                 <button

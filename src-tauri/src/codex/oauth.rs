@@ -9,6 +9,7 @@ use crate::cursor::oauth::{
 };
 use crate::cursor::session::jwt_claims;
 use crate::error::{AppError, Result};
+use crate::http::{Body, Budget, Call, Client, Retry, USAGE_BUDGET};
 use crate::models::{
     json_text, now, Account, ApplicationKind, ImportType, Session, SubscriptionSummary, UsageMetric,
 };
@@ -123,22 +124,28 @@ pub(crate) fn refresh_session(
 }
 
 fn start_device_flow() -> Result<DeviceCodeResponse> {
-    let client = http_client()?;
-    let response = client
-        .post(DEVICE_AUTH_USERCODE_URL)
-        .header("Content-Type", "application/json")
-        .header("User-Agent", USER_AGENT)
-        .json(&serde_json::json!({ "client_id": CODEX_CLIENT_ID }))
-        .send()
-        .map_err(network)?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: DEVICE_AUTH_USERCODE_URL.into(),
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("User-Agent".into(), USER_AGENT.into()),
+            ],
+            query: Vec::new(),
+            body: Body::Json(serde_json::json!({ "client_id": CODEX_CLIENT_ID })),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "ChatGPT 登录请求失败: {status} - {text}"
+            "ChatGPT 登录请求失败: {} - {}",
+            response.status,
+            response.text()
         )));
     }
-    response.json().map_err(network)
+    response.json().map_err(Into::into)
 }
 
 fn poll_device_flow(
@@ -146,13 +153,12 @@ fn poll_device_flow(
     login_id: u64,
     app: &AppHandle,
 ) -> Result<OAuthTokenResponse> {
-    let client = http_client()?;
     let interval = parse_interval(device.interval.as_ref());
     for _ in 0..POLL_ATTEMPTS {
         if !app.state::<OauthLoginState>().is_active(login_id) {
             return Err(AppError::LoginCancelled);
         }
-        match poll_once(&client, device) {
+        match poll_once(device) {
             Ok(tokens) => return Ok(tokens),
             Err(_) => std::thread::sleep(interval),
         }
@@ -160,80 +166,94 @@ fn poll_device_flow(
     Err(AppError::LoginTimeout)
 }
 
-fn poll_once(
-    client: &reqwest::blocking::Client,
-    device: &DeviceCodeResponse,
-) -> Result<OAuthTokenResponse> {
-    let response = client
-        .post(DEVICE_AUTH_TOKEN_URL)
-        .header("Content-Type", "application/json")
-        .header("User-Agent", USER_AGENT)
-        .json(&serde_json::json!({
-            "device_auth_id": device.device_auth_id,
-            "user_code": device.user_code,
-        }))
-        .send()
-        .map_err(network)?;
-    let status = response.status();
-    if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
+fn poll_once(device: &DeviceCodeResponse) -> Result<OAuthTokenResponse> {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: DEVICE_AUTH_TOKEN_URL.into(),
+            headers: vec![
+                ("Content-Type".into(), "application/json".into()),
+                ("User-Agent".into(), USER_AGENT.into()),
+            ],
+            query: Vec::new(),
+            body: Body::Json(serde_json::json!({
+                "device_auth_id": device.device_auth_id,
+                "user_code": device.user_code,
+            })),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::None,
+    )?;
+    if matches!(response.status, 403 | 404) {
         return Err(AppError::Message("等待用户授权".into()));
     }
-    if status == reqwest::StatusCode::GONE {
+    if response.status == 410 {
         return Err(AppError::LoginTimeout);
     }
-    if !status.is_success() {
-        let text = response.text().unwrap_or_default();
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "ChatGPT 登录轮询失败: {status} - {text}"
+            "ChatGPT 登录轮询失败: {} - {}",
+            response.status,
+            response.text()
         )));
     }
-    let success: DevicePollSuccess = response.json().map_err(network)?;
+    let success: DevicePollSuccess = response.json()?;
     exchange_code(&success.authorization_code, &success.code_verifier)
 }
 
 fn exchange_code(code: &str, code_verifier: &str) -> Result<OAuthTokenResponse> {
-    let response = http_client()?
-        .post(OAUTH_TOKEN_URL)
-        .header("User-Agent", USER_AGENT)
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code),
-            ("redirect_uri", DEVICE_REDIRECT_URI),
-            ("client_id", CODEX_CLIENT_ID),
-            ("code_verifier", code_verifier),
-        ])
-        .send()
-        .map_err(network)?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: OAUTH_TOKEN_URL.into(),
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            query: Vec::new(),
+            body: Body::form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", DEVICE_REDIRECT_URI),
+                ("client_id", CODEX_CLIENT_ID),
+                ("code_verifier", code_verifier),
+            ]),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "ChatGPT Token 交换失败: {status} - {text}"
+            "ChatGPT Token 交换失败: {} - {}",
+            response.status,
+            response.text()
         )));
     }
-    response.json().map_err(network)
+    response.json().map_err(Into::into)
 }
 
 fn refresh_tokens(refresh_token: &str) -> Result<OAuthTokenResponse> {
-    let response = http_client()?
-        .post(OAUTH_TOKEN_URL)
-        .header("User-Agent", USER_AGENT)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token),
-            ("client_id", CODEX_CLIENT_ID),
-            ("scope", "openid profile email"),
-        ])
-        .send()
-        .map_err(network)?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: OAUTH_TOKEN_URL.into(),
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            query: Vec::new(),
+            body: Body::form(&[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", refresh_token),
+                ("client_id", CODEX_CLIENT_ID),
+                ("scope", "openid profile email"),
+            ]),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "ChatGPT Token 刷新失败: {status} - {text}"
+            "ChatGPT Token 刷新失败: {} - {}",
+            response.status,
+            response.text()
         )));
     }
-    response.json().map_err(network)
+    response.json().map_err(Into::into)
 }
 
 fn session_from_tokens(tokens: &OAuthTokenResponse) -> Result<Session> {
@@ -295,19 +315,29 @@ fn fetch_quota(
     access_token: &str,
     account_id: Option<&str>,
 ) -> Result<(SubscriptionSummary, UsageMetric)> {
-    let mut request = http_client()?
-        .get("https://chatgpt.com/backend-api/wham/usage")
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("User-Agent", "codex-cli")
-        .header("Accept", "application/json");
+    let mut headers = vec![
+        ("Authorization".into(), format!("Bearer {access_token}")),
+        ("User-Agent".into(), "codex-cli".into()),
+        ("Accept".into(), "application/json".into()),
+    ];
     if let Some(account_id) = account_id {
-        request = request.header("ChatGPT-Account-Id", account_id);
+        headers.push(("ChatGPT-Account-Id".into(), account_id.to_owned()));
     }
-    let response = request.send().map_err(network)?;
-    if !response.status().is_success() {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: "https://chatgpt.com/backend-api/wham/usage".into(),
+            headers,
+            query: Vec::new(),
+            body: Body::Empty,
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message("ChatGPT 用量查询失败".into()));
     }
-    let body: serde_json::Value = response.json().map_err(network)?;
+    let body: serde_json::Value = response.json()?;
     let used = body
         .pointer("/rate_limit/primary_window/used_percent")
         .and_then(serde_json::Value::as_f64)
@@ -353,17 +383,6 @@ fn parse_interval(value: Option<&serde_json::Value>) -> Duration {
         .unwrap_or(5)
         .clamp(2, 15);
     Duration::from_secs(seconds + 3)
-}
-
-fn http_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(network)
-}
-
-fn network(error: impl std::fmt::Display) -> AppError {
-    AppError::Message(format!("ChatGPT 登录网络错误: {error}"))
 }
 
 fn emit_codex_login_status(

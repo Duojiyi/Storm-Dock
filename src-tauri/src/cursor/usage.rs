@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use time::{Date, Duration as TimeDuration, OffsetDateTime};
 
-use crate::cursor::api::{dashboard_cookie, dashboard_request};
+use crate::cursor::api::{dashboard_cookie, dashboard_request_with, fetch_stripe_profile_with};
 use crate::error::Result;
+use crate::http::{Budget, Retry, USAGE_BUDGET};
 use crate::models::{
     now, Account, CursorUsageDetails, ModelUsageSummary, Session, UsageEvent, UsageMetric,
     WeeklyUsageSummary,
@@ -160,14 +161,17 @@ pub(crate) fn collect_usage_event_pages(
     team_id: Option<i64>,
     user_id: Option<i64>,
     dated: bool,
+    budget: &Budget,
 ) -> Result<Vec<serde_json::Value>> {
     let cutoff = OffsetDateTime::now_utc().date() - TimeDuration::days(6);
     let mut collected = Vec::new();
     for page in 1..=USAGE_EVENTS_MAX_PAGES {
-        let response = dashboard_request(
+        let response = dashboard_request_with(
             cookie,
             "/dashboard/get-filtered-usage-events",
             Some(usage_events_body(team_id, user_id, page, dated)),
+            budget,
+            Retry::None,
         )?;
         let Some(events) = usage_events_from_response(&response) else {
             break;
@@ -189,6 +193,7 @@ pub(crate) fn collect_usage_events(
     cookie: &str,
     team_id: Option<i64>,
     user_id: Option<i64>,
+    budget: &Budget,
 ) -> Result<serde_json::Value> {
     // Personal accounts: CursorMeter sends only teamId 0 / page / pageSize.
     // Dated bodies are used by the dashboard, but free plans often reply without
@@ -202,7 +207,7 @@ pub(crate) fn collect_usage_events(
     let mut collected = Vec::new();
     let mut last_error = None;
     for (next_team_id, next_user_id, dated) in shapes {
-        match collect_usage_event_pages(cookie, next_team_id, next_user_id, dated) {
+        match collect_usage_event_pages(cookie, next_team_id, next_user_id, dated, budget) {
             Ok(events) => {
                 collected = events;
                 if !collected.is_empty() {
@@ -738,12 +743,16 @@ pub(crate) fn fetch_grok_bot_quota_fast(
     Option<(crate::models::UsageMetric, Option<String>)>,
     Option<serde_json::Value>,
 )> {
-    let summary = crate::cursor::api::fetch_cursor_subscription_fast(session)?;
+    let budget = Budget::new(USAGE_BUDGET);
+    let summary = fetch_stripe_profile_with(session, &budget, Retry::Transient)
+        .map(|profile| crate::cursor::api::subscription_from_response(&profile))?;
     let cookie = crate::cursor::api::dashboard_cookie(session)?;
-    let sand = crate::cursor::api::dashboard_request(
+    let sand = dashboard_request_with(
         &cookie,
         "/dashboard/get-sand-usage-status",
         Some(serde_json::json!({})),
+        &budget,
+        Retry::None,
     )
     .ok();
     let grok = sand.as_ref().and_then(grok_bot_usage);
@@ -755,15 +764,18 @@ pub(crate) fn fetch_cursor_usage(
     session: &Session,
 ) -> Result<(CursorUsageDetails, serde_json::Value)> {
     let cookie = dashboard_cookie(session)?;
-    let me = dashboard_request(&cookie, "/auth/me", None)?;
-    let summary = dashboard_request(&cookie, "/usage-summary", None)?;
-    let usage = dashboard_request(&cookie, "/usage", None)?;
+    let budget = Budget::new(USAGE_BUDGET);
+    let me = dashboard_request_with(&cookie, "/auth/me", None, &budget, Retry::Transient)?;
+    let summary = dashboard_request_with(&cookie, "/usage-summary", None, &budget, Retry::Transient)?;
+    let usage = dashboard_request_with(&cookie, "/usage", None, &budget, Retry::Transient)?;
     // Cursor calls the separate weekly Grok Bot allowance "Sand" internally.
     // It is optional: plans without an included allowance return no personal meter.
-    let grok_bot_status = dashboard_request(
+    let grok_bot_status = dashboard_request_with(
         &cookie,
         "/dashboard/get-sand-usage-status",
         Some(serde_json::json!({})),
+        &budget,
+        Retry::None,
     )
     .ok();
     let grok_bot = grok_bot_status.as_ref().and_then(grok_bot_usage);
@@ -774,14 +786,25 @@ pub(crate) fn fetch_cursor_usage(
         .is_some_and(|value| value.eq_ignore_ascii_case("enterprise"));
     let team_scoped = is_team_scoped(&summary);
     let teams = team_scoped
-        .then(|| dashboard_request(&cookie, "/dashboard/teams", Some(serde_json::json!({}))).ok())
+        .then(|| {
+            dashboard_request_with(
+                &cookie,
+                "/dashboard/teams",
+                Some(serde_json::json!({})),
+                &budget,
+                Retry::None,
+            )
+            .ok()
+        })
         .flatten();
     let team_id = teams.as_ref().and_then(first_team_id);
     let hard_limit = team_id.and_then(|team_id| {
-        dashboard_request(
+        dashboard_request_with(
             &cookie,
             "/dashboard/get-hard-limit",
             Some(serde_json::json!({ "teamId": team_id })),
+            &budget,
+            Retry::None,
         )
         .ok()
     });
@@ -801,10 +824,12 @@ pub(crate) fn fetch_cursor_usage(
     }
 
     let team_spend = team_id.and_then(|team_id| {
-        dashboard_request(
+        dashboard_request_with(
             &cookie,
             "/dashboard/get-team-spend",
             Some(serde_json::json!({ "teamId": team_id })),
+            &budget,
+            Retry::None,
         )
         .ok()
     });
@@ -818,7 +843,7 @@ pub(crate) fn fetch_cursor_usage(
         .or_else(|| auth_numeric_id(&me));
     let events_team_id = if enterprise { team_id } else { Some(0) };
     let events_user_id = if enterprise { member_id } else { None };
-    let events_result = collect_usage_events(&cookie, events_team_id, events_user_id);
+    let events_result = collect_usage_events(&cookie, events_team_id, events_user_id, &budget);
     let weekly_error = events_result.as_ref().err().map(|error| error.to_string());
     let usage_events = events_result.ok();
     let weekly = usage_events.as_ref().and_then(weekly_usage);

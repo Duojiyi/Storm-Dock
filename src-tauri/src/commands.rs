@@ -6,7 +6,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::apps::{launch_cursor, terminate_cursor, wait_for_cursor_stop};
+use crate::desktop::{self, DesktopApp};
 use crate::codex_sessions::{CodexSession, CodexSessionMessage};
 use crate::cursor::api::{
     cursor_marketplace_plugins, dashboard_cookie, dashboard_request, fetch_cursor_subscription,
@@ -2310,30 +2310,44 @@ pub(crate) fn switch_account(
         .ok()
         .and_then(|controller| controller.account(&id).ok())
         .map(|account| account.application);
-    if application != Some(ApplicationKind::Cursor) {
-        emit_switch_progress(&app, &operation_id, &id, "complete", 100, "success");
-        return Ok(outcome);
-    }
     if outcome.restart_required {
         return Ok(outcome);
     }
-    emit_switch_progress(&app, &operation_id, &id, "launching", 90, "running");
-    if let Err(error) = launch_cursor() {
-        emit_switch_progress(&app, &operation_id, &id, "error", 100, "error");
-        return Err(error_text(error));
+    if let Some(desktop) = application.and_then(DesktopApp::after_switch) {
+        emit_switch_progress(&app, &operation_id, &id, "launching", 90, "running");
+        if let Err(error) = desktop::launch(desktop) {
+            emit_switch_progress(&app, &operation_id, &id, "error", 100, "error");
+            return Err(error_text(error));
+        }
     }
     emit_switch_progress(&app, &operation_id, &id, "complete", 100, "success");
     Ok(outcome)
 }
 
 #[tauri::command]
-pub(crate) fn force_restart_cursor(
+pub(crate) fn force_restart(
     id: String,
     operation_id: String,
     app: AppHandle,
+    state: State<'_, AppState>,
 ) -> std::result::Result<(), String> {
+    let desktop = state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())
+        .and_then(|controller| {
+            controller
+                .account(&id)
+                .map_err(error_text)
+                .and_then(|account| {
+                    DesktopApp::after_switch(account.application).ok_or_else(|| {
+                        "该应用没有可强制重启的桌面客户端。".into()
+                    })
+                })
+        })?;
     emit_switch_progress(&app, &operation_id, &id, "terminating", 25, "running");
-    if let Err(error) = terminate_cursor().and_then(|_| wait_for_cursor_stop()) {
+    if let Err(error) = desktop::terminate(desktop).and_then(|_| desktop::wait_until_stopped(desktop))
+    {
         emit_switch_progress(&app, &operation_id, &id, "error", 100, "error");
         return Err(error_text(error));
     }
@@ -2349,12 +2363,22 @@ pub(crate) fn force_restart_cursor(
         return Err(error);
     }
     emit_switch_progress(&app, &operation_id, &id, "launching", 80, "running");
-    if let Err(error) = launch_cursor() {
+    if let Err(error) = desktop::launch(desktop) {
         emit_switch_progress(&app, &operation_id, &id, "error", 100, "error");
         return Err(error_text(error));
     }
     emit_switch_progress(&app, &operation_id, &id, "complete", 100, "success");
     Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn launch_cursor() -> std::result::Result<(), String> {
+    desktop::launch(DesktopApp::Cursor).map_err(error_text)
+}
+
+#[tauri::command]
+pub(crate) fn launch_chatgpt() -> std::result::Result<(), String> {
+    desktop::launch(DesktopApp::ChatGPT).map_err(error_text)
 }
 
 fn grok_bot_plan_allowed(plan: Option<&str>) -> bool {
@@ -2604,54 +2628,47 @@ pub(crate) async fn test_codex_api_key_account(
 fn probe_codex_endpoint(url: &str) -> CodexConnectionResult {
     let started = std::time::Instant::now();
     let elapsed = || Some(started.elapsed().as_millis() as u64);
-    match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-        .and_then(|client| client.get(url).send())
-    {
-        Ok(response) => CodexConnectionResult {
-            success: true,
-            message: format!("HTTP {}", response.status().as_u16()),
-            response_time_ms: elapsed(),
-        },
-        Err(error) => CodexConnectionResult {
-            success: false,
-            message: error.without_url().to_string(),
-            response_time_ms: elapsed(),
-        },
-    }
+    let mut headers = Vec::new();
+    probe_http_get(url, &mut headers, elapsed, true)
 }
 
 fn probe_grok_endpoint(base_url: &str, api_key: Option<&str>) -> CodexConnectionResult {
     let started = std::time::Instant::now();
     let elapsed = || Some(started.elapsed().as_millis() as u64);
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(8))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return CodexConnectionResult {
-                success: false,
-                message: error.without_url().to_string(),
-                response_time_ms: elapsed(),
-            };
-        }
-    };
-    let mut request = client.get(&url);
+    let mut headers = Vec::new();
     if let Some(api_key) = api_key.filter(|value| !value.is_empty()) {
-        request = request.bearer_auth(api_key);
+        headers.push(("Authorization".into(), format!("Bearer {api_key}")));
     }
-    match request.send() {
+    probe_http_get(&url, &mut headers, elapsed, false)
+}
+
+fn probe_http_get(
+    url: &str,
+    headers: &mut Vec<(String, String)>,
+    elapsed: impl Fn() -> Option<u64>,
+    any_status: bool,
+) -> CodexConnectionResult {
+    use crate::http::{Body, Budget, Call, Client, Retry, REQUEST_TIMEOUT};
+    match Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: url.to_owned(),
+            headers: std::mem::take(headers),
+            query: Vec::new(),
+            body: Body::Empty,
+        },
+        &Budget::new(REQUEST_TIMEOUT),
+        Retry::None,
+    ) {
         Ok(response) => CodexConnectionResult {
-            success: response.status().is_success(),
-            message: format!("HTTP {}", response.status().as_u16()),
+            success: any_status || (200..300).contains(&response.status),
+            message: format!("HTTP {}", response.status),
             response_time_ms: elapsed(),
         },
         Err(error) => CodexConnectionResult {
             success: false,
-            message: error.without_url().to_string(),
+            message: error.to_string(),
             response_time_ms: elapsed(),
         },
     }

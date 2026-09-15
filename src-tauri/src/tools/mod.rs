@@ -12,6 +12,7 @@ mod pi;
 mod uninstall;
 
 use adapter::ToolAdapter;
+use crate::http::{Body, Budget, Call, Client, Retry, TOOLS_BUDGET};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;
@@ -26,19 +27,6 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
-
-fn http_client() -> reqwest::blocking::Client {
-    static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::blocking::Client::builder()
-                .connect_timeout(Duration::from_secs(2))
-                .timeout(Duration::from_secs(4))
-                .build()
-                .unwrap_or_else(|_| reqwest::blocking::Client::new())
-        })
-        .clone()
-}
 
 fn decode_command_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
@@ -908,19 +896,18 @@ fn peek_cached_latest(tool: &str, local: Option<&str>) -> Option<String> {
 }
 
 fn fetch_remote_latest(tool: &str, local: Option<&str>, use_cache: bool) -> Option<String> {
-    let client = http_client();
     if let Some(package) = npm_package_for(tool) {
-        let version = fetch_npm_latest_for_tool(&client, package, tool, local, use_cache);
+        let version = fetch_npm_latest_for_tool(package, tool, local, use_cache);
         if version.is_some() {
             return version;
         }
         if tool == "opencode" {
-            return fetch_github_latest_version(&client, "anomalyco/opencode", use_cache);
+            return fetch_github_latest_version("anomalyco/opencode", use_cache);
         }
         return None;
     }
     match tool {
-        "hermes" => fetch_pypi_latest_version(&client, "hermes-agent", use_cache),
+        "hermes" => fetch_pypi_latest_version("hermes-agent", use_cache),
         _ => None,
     }
 }
@@ -1033,7 +1020,6 @@ fn pick_latest_version(
 
 /// 拉取 npm 包的完整 dist-tags(单次请求即含 latest/next/beta/...)。
 fn fetch_npm_dist_tags(
-    client: &reqwest::blocking::Client,
     package: &str,
     use_cache: bool,
 ) -> Option<serde_json::Map<String, serde_json::Value>> {
@@ -1045,20 +1031,27 @@ fn fetch_npm_dist_tags(
             }
         }
     }
-    let client_ref = client;
     for registry in [
         "https://registry.npmjs.org",
         "https://registry.npmmirror.com",
     ] {
         let url = format!("{registry}/{package}");
-        let Some(resp) = client_ref
-            .get(&url)
-            .send()
-            .ok()
-            .filter(|r| r.status().is_success())
-        else {
+        let Ok(resp) = Client::shared().send(
+            &Call {
+                method: reqwest::Method::GET,
+                url,
+                headers: Vec::new(),
+                query: Vec::new(),
+                body: Body::Empty,
+            },
+            &Budget::new(TOOLS_BUDGET),
+            Retry::None,
+        ) else {
             continue;
         };
+        if !(200..300).contains(&resp.status) {
+            continue;
+        }
         let Ok(json) = resp.json::<serde_json::Value>() else {
             continue;
         };
@@ -1073,13 +1066,12 @@ fn fetch_npm_dist_tags(
 /// 查询某 npm 工具要展示的"最新版本":取 `latest`,并在本地版本领先时按工具的
 /// 预发布通道(见 `npm_prerelease_tags`)补查 —— 复用同一次 registry 响应,无额外请求。
 fn fetch_npm_latest_for_tool(
-    client: &reqwest::blocking::Client,
     package: &str,
     tool: &str,
     local_version: Option<&str>,
     use_cache: bool,
 ) -> Option<String> {
-    let dist_tags = fetch_npm_dist_tags(client, package, use_cache)?;
+    let dist_tags = fetch_npm_dist_tags(package, use_cache)?;
     pick_latest_version(&dist_tags, npm_prerelease_tags(tool), local_version)
 }
 
@@ -1101,18 +1093,24 @@ fn cached_remote(
     version
 }
 
-fn fetch_github_latest_version(
-    client: &reqwest::blocking::Client,
-    repo: &str,
-    use_cache: bool,
-) -> Option<String> {
+fn fetch_github_latest_version(repo: &str, use_cache: bool) -> Option<String> {
     cached_remote(&format!("gh:{repo}"), use_cache, || {
         let url = format!("https://api.github.com/repos/{repo}/releases/latest");
-        let resp = client
-            .get(&url)
-            .header("User-Agent", "Storm Dock")
-            .header("Accept", "application/vnd.github+json")
-            .send()
+        let resp = Client::shared()
+            .send(
+                &Call {
+                    method: reqwest::Method::GET,
+                    url,
+                    headers: vec![
+                        ("User-Agent".into(), "Storm Dock".into()),
+                        ("Accept".into(), "application/vnd.github+json".into()),
+                    ],
+                    query: Vec::new(),
+                    body: Body::Empty,
+                },
+                &Budget::new(TOOLS_BUDGET),
+                Retry::None,
+            )
             .ok()?;
         let json = resp.json::<serde_json::Value>().ok()?;
         json.get("tag_name")
@@ -1121,14 +1119,22 @@ fn fetch_github_latest_version(
     })
 }
 
-fn fetch_pypi_latest_version(
-    client: &reqwest::blocking::Client,
-    package: &str,
-    use_cache: bool,
-) -> Option<String> {
+fn fetch_pypi_latest_version(package: &str, use_cache: bool) -> Option<String> {
     cached_remote(&format!("pypi:{package}"), use_cache, || {
         let url = format!("https://pypi.org/pypi/{package}/json");
-        let resp = client.get(&url).send().ok()?;
+        let resp = Client::shared()
+            .send(
+                &Call {
+                    method: reqwest::Method::GET,
+                    url,
+                    headers: Vec::new(),
+                    query: Vec::new(),
+                    body: Body::Empty,
+                },
+                &Budget::new(TOOLS_BUDGET),
+                Retry::None,
+            )
+            .ok()?;
         let json = resp.json::<serde_json::Value>().ok()?;
         json.get("info")?
             .get("version")?

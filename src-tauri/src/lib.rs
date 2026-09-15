@@ -1,4 +1,5 @@
 mod apps;
+mod desktop;
 mod codex;
 mod codex_sessions;
 mod commands;
@@ -9,6 +10,7 @@ mod grok;
 mod grok_sessions;
 mod grok_bot;
 mod grok_bot_sessions;
+mod http;
 mod models;
 mod sql_backup;
 mod store;
@@ -331,7 +333,9 @@ pub fn run() {
             commands::open_external_url,
             commands::delete_account,
             commands::switch_account,
-            commands::force_restart_cursor,
+            commands::launch_cursor,
+            commands::launch_chatgpt,
+            commands::force_restart,
             commands::get_grok_bot_export_record,
             commands::prepare_launch_grok_bot,
             commands::confirm_launch_grok_bot,

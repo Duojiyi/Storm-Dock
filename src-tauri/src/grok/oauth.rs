@@ -8,6 +8,7 @@ use crate::cursor::oauth::{
     emit_official_login_status, open_browser, OauthLoginState, OfficialLoginStatus,
 };
 use crate::error::{AppError, Result};
+use crate::http::{Body, Budget, Call, Client, Retry, USAGE_BUDGET};
 use crate::grok::session::{
     email_from_jwt, oauth_auth_json, session_from_auth, user_id_from_jwt, XAI_CLIENT_ID, XAI_ISSUER,
 };
@@ -107,20 +108,25 @@ pub(crate) fn complete_grok_oauth(
 
 fn start_device_flow() -> Result<DeviceFlow> {
     let endpoints = discover_endpoints()?;
-    let response = http_client()?
-        .post(&endpoints.device_authorization_endpoint)
-        .header("User-Agent", USER_AGENT)
-        .form(&[("client_id", XAI_CLIENT_ID), ("scope", XAI_SCOPE)])
-        .send()
-        .map_err(network)?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().unwrap_or_default();
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: endpoints.device_authorization_endpoint.clone(),
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            query: Vec::new(),
+            body: Body::form(&[("client_id", XAI_CLIENT_ID), ("scope", XAI_SCOPE)]),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "Grok 登录请求失败: {status} - {text}"
+            "Grok 登录请求失败: {} - {}",
+            response.status,
+            response.text()
         )));
     }
-    let device: DeviceCodeResponse = response.json().map_err(network)?;
+    let device: DeviceCodeResponse = response.json()?;
     Ok(DeviceFlow {
         device_code: device.device_code,
         user_code: device.user_code.clone(),
@@ -134,18 +140,24 @@ fn start_device_flow() -> Result<DeviceFlow> {
 }
 
 fn discover_endpoints() -> Result<DiscoveryDocument> {
-    let response = http_client()?
-        .get(XAI_DISCOVERY_URL)
-        .header("User-Agent", USER_AGENT)
-        .send()
-        .map_err(network)?;
-    if !response.status().is_success() {
-        let status = response.status();
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::GET,
+            url: XAI_DISCOVERY_URL.into(),
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            query: Vec::new(),
+            body: Body::Empty,
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    if !(200..300).contains(&response.status) {
         return Err(AppError::Message(format!(
-            "Grok 登录发现失败: HTTP {status}"
+            "Grok 登录发现失败: HTTP {}",
+            response.status
         )));
     }
-    let document: DiscoveryDocument = response.json().map_err(network)?;
+    let document: DiscoveryDocument = response.json()?;
     if document.issuer.trim_end_matches('/') != XAI_ISSUER {
         return Err(AppError::Message("Grok 登录发现 issuer 不匹配".into()));
     }
@@ -157,12 +169,11 @@ fn poll_device_flow(
     login_id: u64,
     app: &AppHandle,
 ) -> Result<OAuthTokenResponse> {
-    let client = http_client()?;
     for _ in 0..POLL_ATTEMPTS {
         if !app.state::<OauthLoginState>().is_active(login_id) {
             return Err(AppError::LoginCancelled);
         }
-        match poll_once(&client, device) {
+        match poll_once(device) {
             Ok(tokens) => return Ok(tokens),
             Err(AppError::LoginTimeout) => return Err(AppError::LoginTimeout),
             Err(AppError::LoginCancelled) => return Err(AppError::LoginCancelled),
@@ -173,22 +184,24 @@ fn poll_device_flow(
     Err(AppError::LoginTimeout)
 }
 
-fn poll_once(
-    client: &reqwest::blocking::Client,
-    device: &DeviceFlow,
-) -> Result<OAuthTokenResponse> {
-    let response = client
-        .post(&device.token_endpoint)
-        .header("User-Agent", USER_AGENT)
-        .form(&[
-            ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-            ("client_id", XAI_CLIENT_ID),
-            ("device_code", device.device_code.as_str()),
-        ])
-        .send()
-        .map_err(network)?;
-    let status = response.status();
-    let tokens: OAuthTokenResponse = response.json().map_err(network)?;
+fn poll_once(device: &DeviceFlow) -> Result<OAuthTokenResponse> {
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: device.token_endpoint.clone(),
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            query: Vec::new(),
+            body: Body::form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("client_id", XAI_CLIENT_ID),
+                ("device_code", device.device_code.as_str()),
+            ]),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::None,
+    )?;
+    let status = response.status;
+    let tokens: OAuthTokenResponse = response.json()?;
     match tokens.error.as_deref() {
         Some("authorization_pending" | "slow_down") => {
             return Err(AppError::Message("等待用户授权".into()));
@@ -202,7 +215,7 @@ fn poll_once(
         }
         None => {}
     }
-    if !status.is_success() {
+    if !(200..300).contains(&status) {
         return Err(AppError::Message(format!(
             "Grok 登录轮询失败: HTTP {status}"
         )));
@@ -253,17 +266,6 @@ fn expires_at(expires_in: Option<u64>) -> String {
 
 fn is_denied(error: &AppError) -> bool {
     error.to_string().contains("拒绝")
-}
-
-fn http_client() -> Result<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(network)
-}
-
-fn network(error: impl std::fmt::Display) -> AppError {
-    AppError::Message(format!("Grok 登录网络错误: {error}"))
 }
 
 fn emit_grok_login_status(

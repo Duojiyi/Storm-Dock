@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::apps::{ApplicationAdapter, CodexAdapter, CursorAdapter, GrokAdapter};
+use crate::desktop::{self, DesktopApp};
 use crate::cursor::session::{raw_export_from_session, session_display_label};
 use crate::cursor::usage::{cursor_usage_from_snapshot, update_export_usage, usage_pools};
 use crate::error::{AppError, Result};
@@ -896,11 +897,9 @@ impl Controller {
             ));
         }
         let session = self.load_session(&account.id)?;
-        let running = self.adapter(account.application).is_running();
-        // A running Cursor process can flush its old in-memory state back to
-        // state.vscdb. Defer the write and the progress UI until the user
-        // confirms a force restart.
-        if running && account.application == ApplicationKind::Cursor {
+        let desktop = DesktopApp::after_switch(account.application);
+        let running = desktop.is_some_and(desktop::is_running);
+        if running {
             let transaction = self.database.transaction()?;
             transaction.execute(
                 "UPDATE accounts SET last_used_at=?1 WHERE id=?2",
@@ -913,22 +912,18 @@ impl Controller {
         }
         progress("loading", 15);
         progress("applying", 45);
-        if !running {
-            self.prepare_codex_apply();
-            self.adapter(account.application).apply(&session)?;
-        }
+        self.prepare_codex_apply();
+        self.adapter(account.application).apply(&session)?;
         progress("persisting", 75);
         let transaction = self.database.transaction()?;
-        if !running {
-            transaction.execute("INSERT INTO application_state (application, current_account_id) VALUES (?1, ?2) ON CONFLICT(application) DO UPDATE SET current_account_id=excluded.current_account_id", params![Self::kind_value(account.application), account.id])?;
-        }
+        transaction.execute("INSERT INTO application_state (application, current_account_id) VALUES (?1, ?2) ON CONFLICT(application) DO UPDATE SET current_account_id=excluded.current_account_id", params![Self::kind_value(account.application), account.id])?;
         transaction.execute(
             "UPDATE accounts SET last_used_at=?1 WHERE id=?2",
             params![now() as i64, id],
         )?;
         transaction.commit()?;
         Ok(SwitchOutcome {
-            restart_required: running,
+            restart_required: false,
         })
     }
 

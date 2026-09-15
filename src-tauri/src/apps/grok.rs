@@ -147,9 +147,6 @@ impl ApplicationAdapter for GrokAdapter {
         Err(AppError::VerifyFailed)
     }
 
-    fn is_running(&self) -> bool {
-        false
-    }
 }
 
 #[cfg(test)]

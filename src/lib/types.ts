@@ -12,7 +12,7 @@ export function applicationKindFromQuery(search = window.location.search): Appli
   return kind === "codex" || kind === "grok" ? kind : "cursor";
 }
 
-export function syncDocumentAppKind(kind?: ApplicationKind) {
+export function syncDocumentAppKind(kind?: ApplicationKind | "grokBot") {
   if (kind) document.documentElement.dataset.app = kind;
   else delete document.documentElement.dataset.app;
 }
