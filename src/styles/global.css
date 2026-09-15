@@ -131,7 +131,7 @@ html[data-theme="dark"] {
   --toast-error-bg: #482a2d;
   --toast-error-border: #80434b;
   --watermark-opacity: .18;
-  --icon-well: #232830;
+  --icon-well: #353c48;
 }
 
 * { box-sizing: border-box; }

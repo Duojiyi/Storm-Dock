@@ -89,10 +89,8 @@ import {
   setGrokPluginEnabled,
   setMcpServerEnabled,
 } from "../../lib/api";
+import { requestedHomeTab, resolveHomeView, visibleHomeTabs, type HomeTabId } from "../../lib/homeTabs";
 import {
-  APPLICATION_KINDS,
-  isGrokBotHomeView,
-  applicationKindFromQuery,
   canSwitchToDesktop,
   homePath,
   syncDocumentAppKind,
@@ -124,10 +122,11 @@ import { shouldApplySwitchProgress } from "./lib/switchProgress";
 import type { WorkspaceSection, SwitchProgress } from "./types";
 
 type SwitchOutcome = { restartRequired: boolean };
-const APP_ICONS: Record<ApplicationKind, string> = {
+const APP_ICONS: Record<HomeTabId, string> = {
   cursor: cursorIcon,
   codex: codexIcon,
   grok: grokIcon,
+  grokBot: grokBotIcon,
 };
 
 const workspaceSections: Array<{
@@ -333,13 +332,14 @@ function LegacyWorkspaceToolbar({
 export function HomePage() {
   const { t } = useTranslation();
   const [applications, setApplications] = useState<ApplicationStatus[]>([]);
-  const [selected, setSelected] = useState<ApplicationKind>(applicationKindFromQuery);
-  const [grokBotMode, setGrokBotMode] = useState(isGrokBotHomeView);
+  const [selected, setSelected] = useState<ApplicationKind>(() => resolveHomeView().selected);
+  const [grokBotMode, setGrokBotMode] = useState(() => resolveHomeView().grokBotMode);
+  const homeTabs = visibleHomeTabs();
   const [workspaceSection, setWorkspaceSection] =
     useState<WorkspaceSection>("accounts");
   const [pluginsExpanded, setPluginsExpanded] = useState(false);
   const [pluginCount, setPluginCount] = useState<number | undefined>(() =>
-    cachedPluginCount(applicationKindFromQuery()),
+    cachedPluginCount(resolveHomeView().selected),
   );
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
@@ -394,6 +394,11 @@ export function HomePage() {
   useLayoutEffect(() => {
     syncDocumentAppKind(grokBotMode ? "grokBot" : selected);
   }, [grokBotMode, selected]);
+  useLayoutEffect(() => {
+    const view = resolveHomeView();
+    if (requestedHomeTab() === view.tab) return;
+    window.history.replaceState({}, "", homePath(view.tab));
+  }, []);
   const showError = useCallback(
     (error: unknown) =>
       setNotice(error instanceof Error ? error.message : String(error)),
@@ -1159,7 +1164,7 @@ export function HomePage() {
               <a
                 aria-label={t("settings")}
                 className={styles.settingsButton}
-                href={`/settings.html?kind=${selected}`}
+                href={`/settings.html?kind=${grokBotMode ? "grokBot" : selected}`}
               >
                 <Settings aria-hidden="true" size={16} />
               </a>
@@ -1175,19 +1180,17 @@ export function HomePage() {
             value={grokBotMode ? "grokBot" : selected}
           >
             <Tabs.List aria-label={t("applications")}>
-              {APPLICATION_KINDS.map((kind) => (
+              {homeTabs.map((kind) => (
                 <Tabs.Trigger className={styles.appTab} key={kind} value={kind}>
                   <img alt="" className="ink" src={APP_ICONS[kind]} />
-                  {kind === "codex"
-                    ? t("codex")
-                    : (applications.find((app) => app.kind === kind)?.label ??
-                      t(kind))}
+                  {kind === "grokBot"
+                    ? t("grokBot")
+                    : kind === "codex"
+                      ? t("codex")
+                      : (applications.find((app) => app.kind === kind)?.label ??
+                        t(kind))}
                 </Tabs.Trigger>
               ))}
-              <Tabs.Trigger className={styles.appTab} value="grokBot">
-                <img alt="" className="ink" src={grokBotIcon} />
-                {t("grokBot")}
-              </Tabs.Trigger>
             </Tabs.List>
           </Tabs.Root>
           </div>

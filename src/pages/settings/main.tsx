@@ -1,7 +1,10 @@
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as Tabs from "@radix-ui/react-tabs";
-import { ArrowLeft, Check, ChevronDown, Database, Download, FolderSync, KeyRound, Languages, Monitor, PanelTop, Power, RefreshCw } from "lucide-react";
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
+import { SortableContext, arrayMove, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { ArrowLeft, Check, ChevronDown, Database, Download, FolderSync, GripVertical, KeyRound, Languages, LayoutList, Monitor, PanelTop, Power, RefreshCw } from "lucide-react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { getVersion } from "@tauri-apps/api/app";
@@ -13,12 +16,14 @@ import { WindowDragSurface } from "../../components/WindowDragSurface";
 import i18n from "../../i18n";
 import { exportDatabase, getDatabasePath, getPreserveCodexOfficialAuth, importDatabase, moveDatabase, setPreserveCodexOfficialAuth } from "../../lib/api";
 import { getCloseBehavior, setCloseBehavior, type CloseBehavior } from "../../lib/closeBehavior";
+import { getHomeTabs, resolvedHomePath, setHomeTabs, type HomeTabId, type HomeTabPref } from "../../lib/homeTabs";
 import { getPreference, setPreference, type ThemePreference } from "../../lib/theme";
-import { applicationKindFromQuery, homePath, syncDocumentAppKind } from "../../lib/types";
+import { syncDocumentAppKind } from "../../lib/types";
 import logo from "../../assets/logo.svg";
 import cursorIcon from "../../assets/cursor.svg";
 import codexIcon from "../../assets/codex.svg";
 import grokIcon from "../../assets/tools/grok.svg";
+import grokBotIcon from "../../assets/tools/grok-bot.png";
 import { checkForAppUpdate, installUpdateAndRestart } from "../../lib/updater";
 import { LocalEnvPanel } from "./LocalEnvPanel";
 import "../../styles/global.css";
@@ -41,6 +46,57 @@ const aboutApps = [
   { icon: codexIcon, nameKey: "codex", detailKey: "aboutAppCodex" },
   { icon: grokIcon, nameKey: "grok", detailKey: "aboutAppGrok" }
 ] as const;
+
+const HOME_TAB_ICONS: Record<HomeTabId, string> = {
+  cursor: cursorIcon,
+  codex: codexIcon,
+  grok: grokIcon,
+  grokBot: grokBotIcon
+};
+
+function SortableHomeTab({
+  lastVisible,
+  onToggle,
+  tab
+}: {
+  lastVisible: boolean;
+  onToggle: (id: HomeTabId) => void;
+  tab: HomeTabPref;
+}) {
+  const { t } = useTranslation();
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: tab.id });
+  const label = t(tab.id);
+  return <div className={`${styles.homeTabChip} ${tab.visible ? "" : styles.homeTabChipOff} ${isDragging ? styles.homeTabRowDragging : ""}`} ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }}>
+    <GripVertical aria-label={t("dragHomeTab", { tab: label })} className={styles.homeTabDrag} size={16} {...attributes} {...listeners} />
+    <button aria-checked={tab.visible} className={styles.homeTabToggle} disabled={tab.visible && lastVisible} onClick={() => onToggle(tab.id)} role="switch" type="button">
+      <img alt="" className={`${styles.homeTabIcon} ink`} src={HOME_TAB_ICONS[tab.id]} />
+      <span>{label}</span>
+    </button>
+  </div>;
+}
+
+function HomeTabsSettings() {
+  const { t } = useTranslation();
+  const [tabs, setTabs] = useState(getHomeTabs);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  const persist = (next: HomeTabPref[]) => setTabs(setHomeTabs(next));
+  return <div className={`${styles.row} ${styles.homeTabsRow}`}>
+    <div className={styles.settingCopy}><span className={styles.icon}><LayoutList aria-hidden="true" size={20} /></span><div><h2>{t("homeTabs")}</h2><p>{t("homeTabsDescription")}</p></div></div>
+    <DndContext collisionDetection={closestCenter} onDragEnd={({ active, over }) => {
+      if (!over || active.id === over.id) return;
+      const from = tabs.findIndex((tab) => tab.id === active.id);
+      const to = tabs.findIndex((tab) => tab.id === over.id);
+      if (from < 0 || to < 0) return;
+      persist(arrayMove(tabs, from, to));
+    }} sensors={sensors}>
+      <SortableContext items={tabs.map((tab) => tab.id)} strategy={horizontalListSortingStrategy}>
+        <div className={styles.homeTabList}>
+          {tabs.map((tab) => <SortableHomeTab key={tab.id} lastVisible={tabs.filter((item) => item.visible).length === 1} onToggle={(id) => persist(tabs.map((item) => item.id === id ? { ...item, visible: !item.visible } : item))} tab={tab} />)}
+        </div>
+      </SortableContext>
+    </DndContext>
+  </div>;
+}
 
 function SettingsPage() {
   const { t } = useTranslation();
@@ -203,7 +259,7 @@ function SettingsPage() {
 
   return <Toast.Provider><main className={styles.shell}>
     <WindowDragSurface />
-    <header className={styles.header}><a aria-label={t("back")} className={styles.back} href={homePath(applicationKindFromQuery())}><ArrowLeft aria-hidden="true" size={20} /></a><h1>{t("settingsTitle")}</h1></header>
+    <header className={styles.header}><a aria-label={t("back")} className={styles.back} href={resolvedHomePath()}><ArrowLeft aria-hidden="true" size={20} /></a><h1>{t("settingsTitle")}</h1></header>
     <Tabs.Root className={styles.layout} defaultValue="general" orientation="vertical">
       <Tabs.List aria-label={t("settingsTabs")} className={styles.nav}>
         <Tabs.Trigger className={styles.tab} value="general">{t("settingsTabGeneral")}</Tabs.Trigger>
@@ -224,6 +280,7 @@ function SettingsPage() {
               {themes.map((item) => <DropdownMenu.Item className={styles.menuItem} key={item.code} onSelect={() => selectTheme(item.code)}><span>{t(item.key)}</span>{item.code === theme && <Check aria-hidden="true" size={16} />}</DropdownMenu.Item>)}
             </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
           </div>
+          <HomeTabsSettings />
           <div className={styles.sectionTitle}><PanelTop aria-hidden="true" size={20} /><h2>{t("windowBehavior")}</h2></div>
           <div className={styles.behaviorList}>
             <div className={styles.row}><div className={styles.settingCopy}><span className={`${styles.icon} ${styles.powerIcon}`}><Power aria-hidden="true" size={20} /></span><div><h2>{t("launchAtLogin")}</h2><p>{t("launchAtLoginDescription")}</p></div></div><button aria-checked={launchAtLogin} className={styles.switch} onClick={() => void toggleLaunchAtLogin()} role="switch" type="button"><span /></button></div>

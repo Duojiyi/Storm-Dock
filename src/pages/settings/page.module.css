@@ -179,6 +179,20 @@
 .sectionTitle svg { color: var(--focus); }
 .sectionTitle h2 { font-size: 16px; font-weight: 720; }
 
+.homeTabsRow { align-items: stretch; flex-direction: column; gap: 14px; justify-content: flex-start; }
+.homeTabsRow .settingCopy { align-self: start; }
+.homeTabList { align-items: center; display: flex; flex-wrap: nowrap; gap: 6px; width: 100%; }
+.homeTabChip { align-items: center; background: var(--track); border: 1px solid var(--border-strong); border-radius: 6px; display: flex; flex: 1; gap: 2px; min-width: 0; padding: 3px 4px 3px 2px; }
+.homeTabChipOff { opacity: .42; }
+.homeTabRowDragging { box-shadow: 0 8px 20px var(--shadow-strong); opacity: .78; }
+.homeTabDrag { color: var(--muted); cursor: grab; flex: none; outline: none; touch-action: none; }
+.homeTabDrag:focus-visible { color: var(--focus); }
+.homeTabToggle { align-items: center; background: var(--solid); border: 0; border-radius: 4px; color: var(--fg); display: inline-flex; flex: 1; font-size: 12px; font-weight: 650; gap: 5px; justify-content: center; line-height: 24px; min-width: 0; padding: 0 8px 0 6px; }
+.homeTabToggle span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.homeTabToggle:disabled { opacity: 1; }
+.homeTabChipOff .homeTabToggle { background: transparent; color: var(--muted); }
+.homeTabIcon { display: block; height: 14px; object-fit: contain; width: 14px; }
+
 .behaviorList { display: grid; gap: 12px; }
 .rowActions { align-items: center; display: flex; flex: none; gap: 8px; }
 
@@ -193,16 +207,18 @@
   padding: 18px 20px;
 }
 
-.settingCopy { align-items: center; display: flex; gap: 13px; }
+.settingCopy { align-items: center; display: flex; gap: 13px; min-width: 0; }
+.settingCopy > div { min-width: 0; }
 .settingCopy h2 { font-size: 14px; font-weight: 680; margin-bottom: 5px; }
 .settingCopy p { color: var(--muted); font-size: 13px; }
 
 .icon {
   align-items: center;
-  background: var(--accent-bg);
+  background: var(--icon-well);
   border-radius: 5px;
   color: var(--accent);
   display: inline-flex;
+  flex: none;
   height: 38px;
   justify-content: center;
   width: 38px;
