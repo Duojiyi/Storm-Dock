@@ -8,10 +8,10 @@ use crate::cursor::oauth::{
     emit_official_login_status, open_browser, OauthLoginState, OfficialLoginStatus,
 };
 use crate::error::{AppError, Result};
-use crate::http::{Body, Budget, Call, Client, Retry, USAGE_BUDGET};
 use crate::grok::session::{
     email_from_jwt, oauth_auth_json, session_from_auth, user_id_from_jwt, XAI_CLIENT_ID, XAI_ISSUER,
 };
+use crate::http::{Body, Budget, Call, Client, Retry, USAGE_BUDGET};
 use crate::models::{now, Account, ApplicationKind, ImportType};
 use crate::store::AppState;
 use crate::tray::refresh_tray;
@@ -102,6 +102,7 @@ pub(crate) fn complete_grok_oauth(
     drop(controller);
     refresh_tray(&app);
     let _ = app.emit("accounts-changed", ());
+    crate::grok::snapshot::spawn_imported_refresh(app.clone(), account.clone());
     oauth.finish(login_id);
     Ok(account)
 }

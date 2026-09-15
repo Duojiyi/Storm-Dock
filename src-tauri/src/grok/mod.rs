@@ -3,6 +3,7 @@ pub(crate) mod config;
 pub(crate) mod oauth;
 pub(crate) mod plugins;
 pub(crate) mod session;
+pub(crate) mod snapshot;
 pub(crate) mod subscription;
 pub(crate) mod usage;
 

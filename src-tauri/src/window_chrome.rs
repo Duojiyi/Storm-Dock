@@ -41,8 +41,16 @@ fn paint_caption(hwnd: *mut core::ffi::c_void, dark: bool) {
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOACTIVATE: u32 = 0x0010;
     const SWP_FRAMECHANGED: u32 = 0x0020;
-    let caption = if dark { colorref(32, 32, 32) } else { colorref(255, 255, 255) };
-    let text = if dark { colorref(232, 234, 238) } else { colorref(32, 36, 44) };
+    let caption = if dark {
+        colorref(32, 32, 32)
+    } else {
+        colorref(255, 255, 255)
+    };
+    let text = if dark {
+        colorref(232, 234, 238)
+    } else {
+        colorref(32, 36, 44)
+    };
     let immersive: i32 = i32::from(dark);
     unsafe {
         dwm_set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &immersive, 4);

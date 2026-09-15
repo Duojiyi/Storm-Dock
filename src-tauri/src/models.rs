@@ -33,7 +33,7 @@ impl ApplicationKind {
         match self {
             Self::Cursor => "Cursor",
             Self::Codex => "Codex",
-            Self::Grok => "Grok Build",
+            Self::Grok => "Grok",
         }
     }
 }
@@ -110,6 +110,8 @@ pub(crate) struct AccountSummary {
     pub(crate) grok_bot_usage: Option<UsageMetric>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) grok_bot_reset_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reset_at: Option<String>,
     pub(crate) days_remaining: Option<i64>,
     pub(crate) is_current: bool,
     #[serde(default)]
@@ -144,6 +146,8 @@ pub(crate) struct CursorUsageDetails {
     pub(crate) grok_bot: Option<UsageMetric>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) grok_bot_reset_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) products: Vec<ProductUsageShare>,
     pub(crate) models: Vec<ModelUsageSummary>,
     pub(crate) weekly: Vec<WeeklyUsageSummary>,
     pub(crate) weekly_available: bool,
@@ -178,6 +182,13 @@ pub(crate) struct UsageMetric {
     pub(crate) kind: String,
     pub(crate) used: f64,
     pub(crate) limit: Option<f64>,
+    pub(crate) percent: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProductUsageShare {
+    pub(crate) name: String,
     pub(crate) percent: f64,
 }
 
@@ -258,9 +269,24 @@ pub(crate) fn days_remaining(expires_at: u64, current_time: u64) -> i64 {
 }
 
 pub(crate) fn parse_iso_timestamp(text: &str) -> Option<u64> {
-    OffsetDateTime::parse(text.trim(), &Rfc3339)
+    let text = text.trim();
+    OffsetDateTime::parse(text, &Rfc3339)
         .ok()
+        .or_else(|| OffsetDateTime::parse(&without_fraction(text), &Rfc3339).ok())
+        .or_else(|| {
+            OffsetDateTime::parse(&without_fraction(text).replace("+00:00", "Z"), &Rfc3339).ok()
+        })
         .map(|time| time.unix_timestamp() as u64)
+}
+
+fn without_fraction(text: &str) -> String {
+    let Some(dot) = text.find('.') else {
+        return text.to_owned();
+    };
+    let Some(offset) = text[dot + 1..].find(|ch: char| matches!(ch, '+' | '-' | 'Z' | 'z')) else {
+        return text[..dot].to_owned();
+    };
+    format!("{}{}", &text[..dot], &text[dot + 1 + offset..])
 }
 
 pub(crate) fn parse_timestamp(value: &serde_json::Value) -> Option<u64> {
@@ -319,6 +345,7 @@ pub(crate) fn import_type(session: &Session) -> ImportType {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn subscription_from_session(session: &Session) -> SubscriptionSummary {
     SubscriptionSummary {
         plan: session
@@ -355,6 +382,15 @@ pub(crate) fn json_text(value: &serde_json::Value, keys: &[&str]) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grok_fractional_offset_parses_to_unix() {
+        assert_eq!(
+            parse_iso_timestamp("2026-09-21T12:00:00.930537+00:00"),
+            parse_iso_timestamp("2026-09-21T12:00:00Z")
+        );
+        assert!(parse_iso_timestamp("2026-09-21T12:00:00.930537+00:00").is_some());
+    }
 
     #[test]
     fn remaining_days_floor_elapsed_seconds() {

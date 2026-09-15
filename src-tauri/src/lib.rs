@@ -1,23 +1,23 @@
 mod apps;
-mod desktop;
 mod codex;
 mod codex_sessions;
 mod commands;
 mod cursor;
 mod cursor_sessions;
+mod desktop;
 mod error;
 mod grok;
-mod grok_sessions;
 mod grok_bot;
 mod grok_bot_sessions;
+mod grok_sessions;
 mod http;
 mod models;
 mod sql_backup;
 mod store;
 mod tools;
 mod tray;
-mod window_chrome;
 mod updater;
+mod window_chrome;
 
 use std::sync::{
     atomic::{AtomicBool, AtomicU8, Ordering},
@@ -156,87 +156,80 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .on_window_event(|window, event| {
-            match event {
-                tauri::WindowEvent::CloseRequested { api, .. } => {
-                    if window.label() != "main" {
-                        return;
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                if window.label() != "main" {
+                    return;
+                }
+                match CLOSE_BEHAVIOR.load(Ordering::Relaxed) {
+                    CLOSE_QUIT => {}
+                    CLOSE_TRAY => {
+                        api.prevent_close();
+                        crate::tray::hide_main_window_to_tray(window.app_handle());
                     }
-                    match CLOSE_BEHAVIOR.load(Ordering::Relaxed) {
-                        CLOSE_QUIT => {}
-                        CLOSE_TRAY => {
-                            api.prevent_close();
-                            crate::tray::hide_main_window_to_tray(window.app_handle());
+                    _ => {
+                        api.prevent_close();
+                        if CLOSE_ASK_OPEN
+                            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                            .is_err()
+                        {
+                            return;
                         }
-                        _ => {
-                            api.prevent_close();
-                            if CLOSE_ASK_OPEN
-                                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-                                .is_err()
-                            {
-                                return;
-                            }
-                            let app = window.app_handle().clone();
-                            if window.emit("close-requested-ask", ()).is_err() {
-                                CLOSE_ASK_OPEN.store(false, Ordering::Relaxed);
-                                let labels = dialog_labels();
-                                let app_for_dialog = app.clone();
-                                let tray_label = labels.tray.to_string();
-                                let quit_label = labels.quit.to_string();
-                                app.dialog()
-                                    .message(labels.message)
-                                    .title(labels.title)
-                                    .buttons(
-                                        tauri_plugin_dialog::MessageDialogButtons::YesNoCancelCustom(
-                                            labels.tray.into(),
-                                            labels.quit.into(),
-                                            labels.cancel.into(),
-                                        ),
-                                    )
-                                    .show_with_result(move |result| {
-                                        CLOSE_ASK_OPEN.store(false, Ordering::Relaxed);
-                                        let choice = match result {
+                        let app = window.app_handle().clone();
+                        if window.emit("close-requested-ask", ()).is_err() {
+                            CLOSE_ASK_OPEN.store(false, Ordering::Relaxed);
+                            let labels = dialog_labels();
+                            let app_for_dialog = app.clone();
+                            let tray_label = labels.tray.to_string();
+                            let quit_label = labels.quit.to_string();
+                            app.dialog()
+                                .message(labels.message)
+                                .title(labels.title)
+                                .buttons(
+                                    tauri_plugin_dialog::MessageDialogButtons::YesNoCancelCustom(
+                                        labels.tray.into(),
+                                        labels.quit.into(),
+                                        labels.cancel.into(),
+                                    ),
+                                )
+                                .show_with_result(move |result| {
+                                    CLOSE_ASK_OPEN.store(false, Ordering::Relaxed);
+                                    let choice =
+                                        match result {
                                             tauri_plugin_dialog::MessageDialogResult::Yes => "tray",
                                             tauri_plugin_dialog::MessageDialogResult::No => "quit",
-                                            tauri_plugin_dialog::MessageDialogResult::Custom(label)
-                                                if label == tray_label =>
-                                            {
-                                                "tray"
-                                            }
-                                            tauri_plugin_dialog::MessageDialogResult::Custom(label)
-                                                if label == quit_label =>
-                                            {
-                                                "quit"
-                                            }
+                                            tauri_plugin_dialog::MessageDialogResult::Custom(
+                                                label,
+                                            ) if label == tray_label => "tray",
+                                            tauri_plugin_dialog::MessageDialogResult::Custom(
+                                                label,
+                                            ) if label == quit_label => "quit",
                                             _ => "cancel",
                                         };
-                                        match choice {
-                                            "tray" => {
-                                                crate::tray::hide_main_window_to_tray(
-                                                    &app_for_dialog,
-                                                );
-                                                store_close_behavior(&app_for_dialog, "tray");
-                                                let _ = app_for_dialog
-                                                    .emit("close-behavior-changed", "tray");
-                                            }
-                                            "quit" => {
-                                                store_close_behavior(&app_for_dialog, "quit");
-                                                let _ = app_for_dialog
-                                                    .emit("close-behavior-changed", "quit");
-                                                app_for_dialog.exit(0);
-                                            }
-                                            _ => {}
+                                    match choice {
+                                        "tray" => {
+                                            crate::tray::hide_main_window_to_tray(&app_for_dialog);
+                                            store_close_behavior(&app_for_dialog, "tray");
+                                            let _ = app_for_dialog
+                                                .emit("close-behavior-changed", "tray");
                                         }
-                                    });
-                            }
+                                        "quit" => {
+                                            store_close_behavior(&app_for_dialog, "quit");
+                                            let _ = app_for_dialog
+                                                .emit("close-behavior-changed", "quit");
+                                            app_for_dialog.exit(0);
+                                        }
+                                        _ => {}
+                                    }
+                                });
                         }
                     }
                 }
-                tauri::WindowEvent::ThemeChanged(theme) => {
-                    crate::window_chrome::apply_theme(window, *theme);
-                }
-                _ => {}
             }
+            tauri::WindowEvent::ThemeChanged(theme) => {
+                crate::window_chrome::apply_theme(window, *theme);
+            }
+            _ => {}
         })
         .setup(|app| {
             let data_dir = app

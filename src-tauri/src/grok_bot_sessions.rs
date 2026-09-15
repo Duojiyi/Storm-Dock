@@ -77,7 +77,8 @@ pub(crate) fn delete_session(id: &str) -> Result<(), String> {
     if !is_valid_id(id) {
         return Err("无效的会话标识。".into());
     }
-    let root = grok_bot::user_data_dir().ok_or_else(|| "未检测到 Grok Bot 数据目录。".to_string())?;
+    let root =
+        grok_bot::user_data_dir().ok_or_else(|| "未检测到 Grok Bot 数据目录。".to_string())?;
     delete_session_from(&root, id)
 }
 
@@ -98,7 +99,8 @@ pub(crate) fn rename_session(id: &str, title: &str) -> Result<(), String> {
         return Err("无效的会话标识。".into());
     }
     let title = safe_title(title).ok_or_else(|| "会话标题无效。".to_string())?;
-    let root = grok_bot::user_data_dir().ok_or_else(|| "未检测到 Grok Bot 数据目录。".to_string())?;
+    let root =
+        grok_bot::user_data_dir().ok_or_else(|| "未检测到 Grok Bot 数据目录。".to_string())?;
     rename_session_from(&root, id, &title)
 }
 
@@ -251,7 +253,10 @@ fn parse_transcript_entry(entry: &Value) -> Option<CodexSessionMessage> {
         }
         "send-message" => {
             let message = entry.get("message")?;
-            let message_type = message.get("type").and_then(Value::as_str).unwrap_or("text");
+            let message_type = message
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("text");
             let content = match message_type {
                 "text" => message
                     .get("content")
@@ -371,7 +376,8 @@ fn rename_roster_row(path: &Path, id: &str, title: &str) -> Result<bool, String>
 fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let payload = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     let mut file = File::create(path).map_err(|error| error.to_string())?;
-    file.write_all(&payload).map_err(|error| error.to_string())?;
+    file.write_all(&payload)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -382,15 +388,15 @@ fn read_active_account_slot(persistence: &Path) -> Option<String> {
         }
         let text = fs::read_to_string(path).ok()?;
         let value = serde_json::from_str::<Value>(&text).ok()?;
-        let slot = value
-            .get("value")
-            .and_then(|value| value.as_str().map(str::to_owned).or_else(|| {
+        let slot = value.get("value").and_then(|value| {
+            value.as_str().map(str::to_owned).or_else(|| {
                 value
                     .get("accountSlot")
                     .or_else(|| value.get("slot"))
                     .and_then(Value::as_str)
                     .map(str::to_owned)
-            }))?;
+            })
+        })?;
         let slot = slot.trim();
         if slot.is_empty() {
             return None;

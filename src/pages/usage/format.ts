@@ -24,6 +24,11 @@ export function metric(value: CursorUsageDetails["primary"] | NonNullable<Cursor
   return number.format(value.used);
 }
 
+export function productParts(products?: { name: string; percent: number }[]) {
+  if (!products?.length) return;
+  return products.map((item) => `${item.name} ${Math.round(item.percent)}%`).join(" + ");
+}
+
 export function localDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }

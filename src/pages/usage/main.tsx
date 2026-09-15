@@ -10,31 +10,27 @@ import { Tooltip } from "../../components/Tooltip";
 import { WindowDragSurface } from "../../components/WindowDragSurface";
 import "../../i18n";
 import { applicationKindFromQuery, homePath, syncDocumentAppKind, type CursorUsageDetails } from "../../lib/types";
+import { subscriptionPlanName } from "../home/lib/accountPresentation";
 import "../../styles/global.css";
-import { daysUntil, hasLimit, isOverLimit, metric, spendCents } from "./format";
+import { daysUntil, hasLimit, isOverLimit, metric, productParts, spendCents } from "./format";
 import { EventLedger } from "./EventLedger";
 import { ModelBars } from "./ModelBars";
 import { WeeklyChart } from "./WeeklyChart";
 import styles from "./page.module.css";
 
 function membershipLabel(type?: string, t?: (key: string, options?: Record<string, unknown>) => string) {
-  if (!type) return;
-  const plan = type.toLowerCase();
-  if (t) {
-    const named = t(`subscriptionPlans.${plan}`, { defaultValue: "" });
-    if (named) return named;
-  }
-  if (plan === "free") return "Free";
-  if (plan === "supergrok") return "SuperGrok";
-  return type.charAt(0).toUpperCase() + type.slice(1);
+  if (!type || !t) return;
+  return subscriptionPlanName(type, t);
 }
 
 function usageUsedCopy(
   label: string,
   value: CursorUsageDetails["primary"] | NonNullable<CursorUsageDetails["onDemand"]> | NonNullable<CursorUsageDetails["grokBot"]>,
   t: (key: string, options?: Record<string, unknown>) => string,
+  parts?: string,
 ) {
   const amount = metric(value);
+  if (parts) return t("usageUsedWithParts", { label, amount, parts });
   if (value.kind === "currency" && hasLimit(value)) {
     return t("usageUsedWithLimit", { label, amount, percent: Math.round(Math.max(value.percent, 0)) });
   }
@@ -134,7 +130,7 @@ function UsagePage() {
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
   };
   const membership = membershipLabel(data?.membershipType, t);
-  const resetAt = data?.resetAt ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(data.resetAt)) : undefined;
+  const resetExact = formatResetAt(data?.resetAt);
   const checkedAt = data ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.checkedAt * 1000)) : undefined;
   return <Toast.Provider>
     <main className={styles.shell}>
@@ -160,7 +156,7 @@ function UsagePage() {
         {membership && <span className={styles.badge}>{membership}</span>}
       </div>
       <div className={styles.usageLines}>
-        <p className={isOverLimit(data.primary) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(primaryLabel, data.primary, t)}</p>
+        <p className={isOverLimit(data.primary) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(primaryLabel, data.primary, t, isGrok ? productParts(data.products) : undefined)}{isGrok && resetExact ? <span className={styles.poolReset}>{t("usageResetParen", { reset: botResetCopy(data.resetAt, t) })}</span> : null}</p>
         {data.onDemand && <p className={isOverLimit(data.onDemand) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(onDemandLabel, data.onDemand, t)}</p>}
         {data.grokBot && <p className={styles.usageLine}>{usageUsedCopy(t("usageGrokBot"), data.grokBot, t)}{data.grokBotResetAt && <span className={styles.poolReset} title={formatResetAt(data.grokBotResetAt)}> · {botResetCopy(data.grokBotResetAt, t)}</span>}</p>}
       </div>
@@ -170,7 +166,7 @@ function UsagePage() {
       </div>
       <EventLedger events={data.events ?? []} unavailable={data.weeklyError} />
       <div className={styles.meta}>
-        {resetAt ? <Tooltip content={resetAt}><button className={styles.reset} type="button">{resetCopy(data.resetAt, t)}</button></Tooltip> : <span>{t("usageUnknown")}</span>}
+        {resetExact ? <Tooltip content={resetExact}><button className={styles.reset} type="button">{resetCopy(data.resetAt, t)}</button></Tooltip> : <span>{t("usageUnknown")}</span>}
         <span className={justUpdated ? styles.justUpdated : undefined}>{t("usageCheckedAt", { time: checkedAt })}</span>
       </div>
     </section>}

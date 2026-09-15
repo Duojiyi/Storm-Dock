@@ -242,9 +242,7 @@ fn build_client(redirect: Policy) -> ReqwestClient {
             builder = builder.proxy(proxy);
         }
     }
-    builder
-        .build()
-        .unwrap_or_else(|_| ReqwestClient::new())
+    builder.build().unwrap_or_else(|_| ReqwestClient::new())
 }
 
 fn env_proxy_url() -> Option<String> {

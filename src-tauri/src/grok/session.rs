@@ -75,6 +75,19 @@ pub(crate) fn access_token(auth: &serde_json::Value) -> Option<String> {
     preferred_entry(auth).and_then(|entry| string_field(entry, "key"))
 }
 
+pub(crate) const CLI_CHAT_PROXY: &str = "https://cli-chat-proxy.grok.com/v1";
+
+/// Headers the official Grok CLI sends to `cli-chat-proxy.grok.com`.
+/// Without `X-XAI-Token-Auth: xai-grok-cli` the proxy treats the caller as an unentitled API client.
+pub(crate) fn cli_proxy_headers(token: &str) -> Vec<(String, String)> {
+    vec![
+        ("Authorization".into(), format!("Bearer {token}")),
+        ("X-XAI-Token-Auth".into(), "xai-grok-cli".into()),
+        ("Accept".into(), "application/json".into()),
+        ("x-grok-client-mode".into(), "headless".into()),
+    ]
+}
+
 pub(crate) fn user_id(auth: &serde_json::Value) -> Option<String> {
     preferred_entry(auth).and_then(|entry| {
         string_field(entry, "user_id").or_else(|| string_field(entry, "principal_id"))

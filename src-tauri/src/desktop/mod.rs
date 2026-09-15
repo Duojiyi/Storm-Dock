@@ -216,7 +216,10 @@ mod platform {
         Err(terminate_failed(app))
     }
     pub(super) fn wait_until_stopped(app: DesktopApp) -> Result<()> {
-        Err(AppError::Message(format!("{} 未在 5 秒内退出。", app.name())))
+        Err(AppError::Message(format!(
+            "{} 未在 5 秒内退出。",
+            app.name()
+        )))
     }
     pub(super) fn quit_and_wait(app: DesktopApp) -> Result<()> {
         Err(quit_failed(app))
@@ -258,10 +261,7 @@ mod tests {
     fn parse_lnk_reads_ansi_local_base_path() {
         let target = r"D:\GrokBot\Grok Bot\Grok Bot.exe";
         let bytes = minimal_lnk(target);
-        assert_eq!(
-            parse_lnk_target(&bytes).as_deref(),
-            Some(Path::new(target))
-        );
+        assert_eq!(parse_lnk_target(&bytes).as_deref(), Some(Path::new(target)));
     }
 
     fn minimal_lnk(target: &str) -> Vec<u8> {

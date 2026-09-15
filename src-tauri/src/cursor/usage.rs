@@ -723,6 +723,7 @@ pub(crate) fn cursor_usage_from_snapshot(
         on_demand,
         grok_bot: grok_bot.as_ref().map(|(metric, _)| metric.clone()),
         grok_bot_reset_at: grok_bot.and_then(|(_, reset_at)| reset_at),
+        products: vec![],
         models,
         weekly_available: false,
         weekly: vec![],
@@ -766,7 +767,8 @@ pub(crate) fn fetch_cursor_usage(
     let cookie = dashboard_cookie(session)?;
     let budget = Budget::new(USAGE_BUDGET);
     let me = dashboard_request_with(&cookie, "/auth/me", None, &budget, Retry::Transient)?;
-    let summary = dashboard_request_with(&cookie, "/usage-summary", None, &budget, Retry::Transient)?;
+    let summary =
+        dashboard_request_with(&cookie, "/usage-summary", None, &budget, Retry::Transient)?;
     let usage = dashboard_request_with(&cookie, "/usage", None, &budget, Retry::Transient)?;
     // Cursor calls the separate weekly Grok Bot allowance "Sand" internally.
     // It is optional: plans without an included allowance return no personal meter.
@@ -863,6 +865,7 @@ pub(crate) fn fetch_cursor_usage(
         on_demand,
         grok_bot: grok_bot.as_ref().map(|(metric, _)| metric.clone()),
         grok_bot_reset_at: grok_bot.and_then(|(_, reset_at)| reset_at),
+        products: vec![],
         models,
         weekly_available: weekly.is_some(),
         weekly: weekly.unwrap_or_default(),
@@ -1291,6 +1294,7 @@ mod tests {
             on_demand: None,
             grok_bot: None,
             grok_bot_reset_at: None,
+            products: vec![],
             models: vec![],
             weekly: vec![],
             weekly_available: false,

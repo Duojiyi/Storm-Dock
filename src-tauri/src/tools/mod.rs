@@ -11,8 +11,8 @@ mod opencode;
 mod pi;
 mod uninstall;
 
-use adapter::ToolAdapter;
 use crate::http::{Body, Budget, Call, Client, Retry, TOOLS_BUDGET};
+use adapter::ToolAdapter;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::HashMap;

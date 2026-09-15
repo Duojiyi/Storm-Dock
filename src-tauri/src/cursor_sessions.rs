@@ -213,7 +213,10 @@ fn transcript_rank(path: &Path, root: &Path) -> (u8, u64) {
 }
 
 fn session_rank(session: &CodexSession) -> (u8, u64) {
-    (project_rank(session.project_dir.as_deref()), session.updated_at)
+    (
+        project_rank(session.project_dir.as_deref()),
+        session.updated_at,
+    )
 }
 
 fn project_rank(project: Option<&str>) -> u8 {

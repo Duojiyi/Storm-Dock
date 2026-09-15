@@ -8,14 +8,14 @@ use std::{
 };
 
 use crate::apps::{ApplicationAdapter, CodexAdapter, CursorAdapter, GrokAdapter};
-use crate::desktop::{self, DesktopApp};
 use crate::cursor::session::{raw_export_from_session, session_display_label};
 use crate::cursor::usage::{cursor_usage_from_snapshot, update_export_usage, usage_pools};
+use crate::desktop::{self, DesktopApp};
 use crate::error::{AppError, Result};
 use crate::models::{
-    days_remaining, matching_account_index, now, subscription_from_session, Account,
-    AccountSummary, ApplicationKind, ApplicationStatus, CursorUsageDetails, ImportType, Session,
-    SubscriptionSummary, SwitchOutcome, ACCESS_TOKEN_KEY, AUTH_ID_KEY, EMAIL_KEY,
+    days_remaining, matching_account_index, now, Account, AccountSummary, ApplicationKind,
+    ApplicationStatus, CursorUsageDetails, ImportType, Session, SubscriptionSummary, SwitchOutcome,
+    ACCESS_TOKEN_KEY, AUTH_ID_KEY, EMAIL_KEY,
 };
 
 #[cfg(test)]
@@ -313,11 +313,11 @@ impl Controller {
                     .is_some_and(|(active, saved)| {
                         crate::grok_bot::session_matches_active_slot(saved, active)
                     });
-                let (grok_bot_usage, grok_bot_reset_at) =
+                let (grok_bot_usage, grok_bot_reset_at, usage_reset_at) =
                     if matches!(kind, ApplicationKind::Cursor | ApplicationKind::Grok) {
                         self.cursor_grok_bot_summary(&account)
                     } else {
-                        (None, None)
+                        (None, None, None)
                     };
                 AccountSummary {
                     is_current,
@@ -340,6 +340,11 @@ impl Controller {
                         .and_then(|json| serde_json::from_str(&json).ok()),
                     grok_bot_usage,
                     grok_bot_reset_at,
+                    reset_at: if kind == ApplicationKind::Grok {
+                        usage_reset_at
+                    } else {
+                        None
+                    },
                     status: self
                         .database
                         .query_row(
@@ -349,10 +354,24 @@ impl Controller {
                         )
                         .ok()
                         .flatten(),
-                    days_remaining: account
-                        .subscription
-                        .reset_timestamp(&account.raw_export)
-                        .map(|expires_at| days_remaining(expires_at, now())),
+                    days_remaining: if kind == ApplicationKind::Grok {
+                        account
+                            .subscription
+                            .expires_at
+                            .or_else(|| {
+                                account
+                                    .subscription
+                                    .billing_cycle_end
+                                    .as_deref()
+                                    .and_then(crate::models::parse_iso_timestamp)
+                            })
+                            .map(|expires_at| days_remaining(expires_at, now()))
+                    } else {
+                        account
+                            .subscription
+                            .reset_timestamp(&account.raw_export)
+                            .map(|expires_at| days_remaining(expires_at, now()))
+                    },
                     base_url: match kind {
                         ApplicationKind::Codex => account_session
                             .as_ref()
@@ -366,7 +385,6 @@ impl Controller {
             })
             .collect()
     }
-
 
     pub(crate) fn grok_bot_accounts(&self) -> Vec<AccountSummary> {
         // Cursor: only non-free (Grok Bot needs a paid Cursor plan).
@@ -393,7 +411,11 @@ impl Controller {
     fn cursor_grok_bot_summary(
         &self,
         account: &Account,
-    ) -> (Option<crate::models::UsageMetric>, Option<String>) {
+    ) -> (
+        Option<crate::models::UsageMetric>,
+        Option<String>,
+        Option<String>,
+    ) {
         let json: Option<String> = self
             .database
             .query_row(
@@ -406,7 +428,11 @@ impl Controller {
         if let Some(json) = json {
             if let Ok(details) = serde_json::from_str::<CursorUsageDetails>(&json) {
                 if details.account_id == account.id {
-                    return (details.grok_bot, details.grok_bot_reset_at);
+                    return (
+                        details.grok_bot,
+                        details.grok_bot_reset_at,
+                        details.reset_at,
+                    );
                 }
             }
         }
@@ -414,8 +440,14 @@ impl Controller {
             .raw_export
             .get("cursor_usage_raw")
             .and_then(|raw| cursor_usage_from_snapshot(account, raw))
-            .map(|details| (details.grok_bot, details.grok_bot_reset_at))
-            .unwrap_or((None, None))
+            .map(|details| {
+                (
+                    details.grok_bot,
+                    details.grok_bot_reset_at,
+                    details.reset_at,
+                )
+            })
+            .unwrap_or((None, None, None))
     }
 
     pub(crate) fn reorder_accounts(
@@ -489,10 +521,6 @@ impl Controller {
             }
             account.email = email.clone();
             account.import_type = import_type;
-            let imported_subscription = subscription_from_session(&session);
-            if imported_subscription.plan.is_some() {
-                account.subscription.merge_from(imported_subscription);
-            }
             account.updated_at = now;
             account.last_used_at = now;
             account.raw_export = raw_export_from_session(
@@ -526,7 +554,7 @@ impl Controller {
             label,
             email,
             import_type,
-            subscription: subscription_from_session(&session),
+            subscription: SubscriptionSummary::default(),
             raw_export: raw_export_from_session(
                 &session,
                 &id,
@@ -731,7 +759,6 @@ impl Controller {
         Ok(())
     }
 
-
     pub(crate) fn saved_grok_usage(&self, id: &str) -> Result<Option<CursorUsageDetails>> {
         let account = self.account(id)?;
         if account.application != ApplicationKind::Grok {
@@ -743,8 +770,11 @@ impl Controller {
             |row| row.get(0),
         )?;
         if let Some(json) = json {
-            if let Ok(details) = serde_json::from_str::<CursorUsageDetails>(&json) {
+            if let Ok(mut details) = serde_json::from_str::<CursorUsageDetails>(&json) {
                 if details.account_id == id {
+                    if let Some(plan) = account.subscription.plan.clone() {
+                        details.membership_type = Some(plan);
+                    }
                     return Ok(Some(details));
                 }
             }
@@ -752,41 +782,41 @@ impl Controller {
         Ok(None)
     }
 
-    pub(crate) fn save_grok_usage(
+    pub(crate) fn save_grok_snapshot(
         &mut self,
         id: &str,
-        usage: CursorUsageDetails,
-        raw: serde_json::Value,
+        snapshot: crate::grok::snapshot::GrokSnapshot,
     ) -> Result<()> {
-        if usage.account_id != id {
+        if snapshot.usage.account_id != id {
             return Err(AppError::Message("用量数据与账号不匹配。".into()));
         }
         let mut account = self.account(id)?;
         if account.application != ApplicationKind::Grok {
             return Err(AppError::ComingSoon);
         }
-        if let Some(reset_at) = usage.reset_at.clone() {
-            account.subscription.merge_from(SubscriptionSummary {
-                billing_cycle_end: Some(reset_at.clone()),
-                expires_at: crate::models::parse_iso_timestamp(&reset_at),
-                plan: usage
-                    .membership_type
-                    .clone()
-                    .or_else(|| account.subscription.plan.clone()),
-                checked_at: Some(usage.checked_at),
-            });
-        }
+        account.subscription.plan = snapshot
+            .subscription
+            .plan
+            .or_else(|| account.subscription.plan.take());
+        account.subscription.expires_at = snapshot.subscription.expires_at;
+        account.subscription.billing_cycle_end = snapshot.subscription.billing_cycle_end;
+        account.subscription.checked_at = snapshot
+            .subscription
+            .checked_at
+            .or(account.subscription.checked_at);
         if let Some(obj) = account.raw_export.as_object_mut() {
-            obj.insert("grok_billing_raw".into(), raw);
+            obj.insert("grok_billing_raw".into(), snapshot.billing_raw);
         }
+        let updated = now();
+        account.updated_at = updated;
         self.database.execute(
-            "UPDATE accounts SET usage_json=?1, usage_summary_json=?2, raw_export_json=?3, subscription_json=?4, updated_at=?5 WHERE id=?6",
+            "UPDATE accounts SET usage_json=?1, usage_summary_json=?2, raw_export_json=?3, subscription_json=?4, token_status=NULL, updated_at=?5 WHERE id=?6",
             params![
-                serde_json::to_string(&usage)?,
-                serde_json::to_string(&usage.primary)?,
+                serde_json::to_string(&snapshot.usage)?,
+                serde_json::to_string(&snapshot.usage.primary)?,
                 serde_json::to_string(&account.raw_export)?,
                 serde_json::to_string(&account.subscription)?,
-                now() as i64,
+                updated as i64,
                 id
             ],
         )?;
@@ -830,6 +860,7 @@ impl Controller {
                 on_demand: None,
                 grok_bot: None,
                 grok_bot_reset_at: None,
+                products: vec![],
                 models: vec![],
                 weekly_available: false,
                 weekly: vec![],
@@ -1413,6 +1444,15 @@ mod tests {
             )
             .unwrap();
         controller
+            .save_subscription(
+                &account.id,
+                SubscriptionSummary {
+                    plan: Some("pro".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        controller
             .save_imported_session(
                 ApplicationKind::Cursor,
                 None,
@@ -1831,6 +1871,7 @@ INSERT INTO providers (id, app_type, name, settings_config, meta, is_current, in
             on_demand: None,
             grok_bot: None,
             grok_bot_reset_at: None,
+            products: vec![],
             models: vec![],
             weekly: vec![],
             weekly_available: false,
@@ -1939,5 +1980,4 @@ INSERT INTO providers (id, app_type, name, settings_config, meta, is_current, in
         assert!(!controller.preserve_codex_official_auth());
         let _ = fs::remove_dir_all(data_dir);
     }
-
 }

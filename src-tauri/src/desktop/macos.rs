@@ -9,7 +9,10 @@ use std::{
 
 use once_cell::sync::Lazy;
 
-use super::{app_bundle_in, launch_failed, not_installed, quit_failed, quit_timeout, terminate_failed, DesktopApp};
+use super::{
+    app_bundle_in, launch_failed, not_installed, quit_failed, quit_timeout, terminate_failed,
+    DesktopApp,
+};
 use crate::error::{AppError, Result};
 
 const PROC_ALL_PIDS: u32 = 1;
@@ -61,7 +64,10 @@ fn ls_application_path(app: DesktopApp) -> Option<PathBuf> {
         Some(id) => format!("POSIX path of (path to application id \"{id}\")"),
         None => format!("POSIX path of (path to application \"{}\")", app.name()),
     };
-    let output = Command::new("osascript").args(["-e", &script]).output().ok()?;
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

@@ -262,9 +262,7 @@ fn encrypt_os_crypt_windows(value: &str, key: &[u8; 32]) -> String {
     let unbound = UnboundKey::new(&AES_256_GCM, key).expect("32-byte OSCrypt key");
     let sealing = LessSafeKey::new(unbound);
     let mut nonce_bytes = [0u8; 12];
-    SystemRandom::new()
-        .fill(&mut nonce_bytes)
-        .expect("nonce");
+    SystemRandom::new().fill(&mut nonce_bytes).expect("nonce");
     let nonce = Nonce::assume_unique_for_key(nonce_bytes);
     let mut in_out = value.as_bytes().to_vec();
     sealing
@@ -518,7 +516,10 @@ mod tests {
         {
             assert!(!status.available);
             assert!(!status.installed);
-            assert_eq!(status.reason.as_deref(), Some("当前平台暂不支持 Grok Bot。"));
+            assert_eq!(
+                status.reason.as_deref(),
+                Some("当前平台暂不支持 Grok Bot。")
+            );
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
@@ -620,7 +621,10 @@ mod tests {
     }
 
     fn process_name_matches_for_test(wide: &[u16], expected: &str) -> bool {
-        let end = wide.iter().position(|&unit| unit == 0).unwrap_or(wide.len());
+        let end = wide
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(wide.len());
         String::from_utf16_lossy(&wide[..end]).eq_ignore_ascii_case(expected)
     }
 

@@ -130,9 +130,9 @@ fn discover(app: DesktopApp) -> Option<PathBuf> {
     if let Some(path) = candidate_exes(app).into_iter().find(|path| path.is_file()) {
         return Some(path);
     }
-    shortcut_paths(app)
-        .into_iter()
-        .find_map(|shortcut| parse_lnk_target(&fs::read(shortcut).ok()?).filter(|path| path.is_file()))
+    shortcut_paths(app).into_iter().find_map(|shortcut| {
+        parse_lnk_target(&fs::read(shortcut).ok()?).filter(|path| path.is_file())
+    })
 }
 
 fn candidate_exes(app: DesktopApp) -> Vec<PathBuf> {
@@ -248,7 +248,10 @@ fn wide_quoted(path: &Path) -> Vec<u16> {
 }
 
 fn process_name_matches(wide: &[u16], expected: &str) -> bool {
-    let end = wide.iter().position(|&unit| unit == 0).unwrap_or(wide.len());
+    let end = wide
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(wide.len());
     String::from_utf16_lossy(&wide[..end]).eq_ignore_ascii_case(expected)
 }
 
@@ -357,7 +360,10 @@ pub(super) fn quit_and_wait(app: DesktopApp) -> Result<()> {
         hwnds: Vec::new(),
     };
     unsafe {
-        EnumWindows(enum_windows_proc, &mut targets as *mut CloseTargets as isize);
+        EnumWindows(
+            enum_windows_proc,
+            &mut targets as *mut CloseTargets as isize,
+        );
         for hwnd in targets.hwnds {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
         }
@@ -401,9 +407,11 @@ pub(super) fn quit_and_wait(app: DesktopApp) -> Result<()> {
         }
     }
     if Instant::now() < deadline {
-        wait_while_running(app, deadline.saturating_duration_since(Instant::now()), || {
-            quit_timeout(app)
-        })
+        wait_while_running(
+            app,
+            deadline.saturating_duration_since(Instant::now()),
+            || quit_timeout(app),
+        )
         .ok();
     }
     if is_running(app) {

@@ -382,6 +382,7 @@ pub(crate) fn complete_cursor_oauth(
     drop(controller);
     refresh_tray(&app);
     let _ = app.emit("accounts-changed", ());
+    crate::commands::spawn_imported_refresh(app.clone(), account.clone());
     oauth.finish(login_id);
     Ok(account)
 }

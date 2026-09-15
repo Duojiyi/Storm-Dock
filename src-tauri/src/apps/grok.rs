@@ -146,7 +146,6 @@ impl ApplicationAdapter for GrokAdapter {
         }
         Err(AppError::VerifyFailed)
     }
-
 }
 
 #[cfg(test)]

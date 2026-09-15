@@ -433,7 +433,10 @@ pub(crate) fn dashboard_request_with(
     if body.is_some() || path.contains("dashboard/") {
         headers.extend([
             ("Origin".into(), "https://cursor.com".into()),
-            ("Referer".into(), "https://cursor.com/dashboard?tab=usage".into()),
+            (
+                "Referer".into(),
+                "https://cursor.com/dashboard?tab=usage".into(),
+            ),
             ("Sec-Fetch-Site".into(), "same-origin".into()),
             ("Sec-Fetch-Mode".into(), "cors".into()),
             ("Sec-Fetch-Dest".into(), "empty".into()),

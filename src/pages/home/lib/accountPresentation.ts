@@ -2,24 +2,36 @@ import type { Account } from "../../../lib/types";
 
 export type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+export function subscriptionPlanName(plan: string, t: Translate) {
+  const normalized = plan.toLowerCase().replace(/[\s-]+/g, "_");
+  return t(`subscriptionPlans.${normalized}`, { defaultValue: plan });
+}
+
 export function subscriptionPlanBadge(account: Account, t: Translate) {
-  const raw = account.subscription.plan?.toLowerCase();
-  // Grok Build API returns null tier for Free; avoid "未知订阅" before/without refresh.
-  const plan = raw || (account.application === "grok" ? "free" : undefined);
+  const plan = account.subscription.plan?.toLowerCase();
   if (!plan) return { name: t("subscriptionUnknownPlan"), plan: "unknown" };
   return {
-    name: t(`subscriptionPlans.${plan}`, { defaultValue: account.subscription.plan ?? plan }),
+    name: subscriptionPlanName(plan, t),
     plan,
   };
 }
 
 export function subscriptionLabel(account: Account, t: Translate) {
   const plan = account.subscription.plan;
-  if (!plan) return undefined;
+  if (!plan) {
+    return {
+      name: t("subscriptionUnknownPlan"),
+      expiry: t("subscriptionUnknownExpiry"),
+      plan: "unknown",
+    };
+  }
   const normalizedPlan = plan.toLowerCase();
-  const name = t(`subscriptionPlans.${normalizedPlan}`, { defaultValue: plan });
-  const days = account.daysRemaining;
-  const expiry = !account.subscription.expiresAt || days === undefined
+  const name = subscriptionPlanName(plan, t);
+  const days = account.application === "grok"
+    ? grokRemainingDays(account.subscription.billingCycleEnd, account.subscription.expiresAt)
+      ?? account.daysRemaining
+    : account.daysRemaining;
+  const expiry = days === undefined
     ? t("subscriptionUnknownExpiry")
     : days > 0
       ? t("subscriptionDays", { count: days })
@@ -29,12 +41,27 @@ export function subscriptionLabel(account: Account, t: Translate) {
   return { name, expiry, plan: normalizedPlan };
 }
 
+function grokRemainingDays(iso: string | undefined, unix?: number) {
+  const stamp = iso
+    ? new Date(iso).getTime()
+    : unix != null
+      ? unix * 1000
+      : Number.NaN;
+  if (Number.isNaN(stamp)) return undefined;
+  const days = Math.floor((stamp - Date.now()) / 86_400_000);
+  return days < 0 ? -1 : days;
+}
+
 export function usageLabel(account: Account, t: Translate) {
+  let label: string | undefined;
   if (account.usage?.kind === "currency")
-    return t("usageSpent", { amount: `$${(account.usage.used / 100).toFixed(2)}` });
-  if (account.usage?.kind === "percent")
-    return t("usagePercent", { percent: Math.round(account.usage.percent) });
-  return account.subscription.plan?.toLowerCase() === "free" ? t("usageFree") : undefined;
+    label = t("usageSpent", { amount: `$${(account.usage.used / 100).toFixed(2)}` });
+  else if (account.usage?.kind === "percent")
+    label = t("usagePercent", { percent: Math.round(account.usage.percent) });
+  else if (account.subscription.plan?.toLowerCase() === "free")
+    label = t("usageFree");
+  const reset = account.application === "grok" ? grokBotResetLabel(account.resetAt, t) : undefined;
+  return label && reset ? `${label} · ${reset}` : label;
 }
 
 export function endpointHost(url?: string) {

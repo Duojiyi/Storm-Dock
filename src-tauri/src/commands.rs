@@ -6,7 +6,6 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::desktop::{self, DesktopApp};
 use crate::codex_sessions::{CodexSession, CodexSessionMessage};
 use crate::cursor::api::{
     cursor_marketplace_plugins, dashboard_cookie, dashboard_request, fetch_cursor_subscription,
@@ -15,12 +14,13 @@ use crate::cursor::api::{
 };
 use crate::cursor::oauth::{complete_cursor_oauth, open_browser, OauthLoginState};
 use crate::cursor::usage::{fetch_cursor_usage, fetch_grok_bot_quota_fast, usage_pools};
-use crate::grok::subscription::fetch_grok_subscription;
-use crate::grok::usage::fetch_grok_usage;
+use crate::desktop::{self, DesktopApp};
 use crate::error::AppError;
+use crate::grok::snapshot::fetch_grok_snapshot;
+use crate::grok::subscription::fetch_grok_subscription;
 use crate::models::{
     import_type, Account, AccountSummary, ApplicationKind, ApplicationStatus, CursorUsageDetails,
-    McpServer, Plugin, PluginCapability, Session, SwitchOutcome, SwitchProgress,
+    ImportType, McpServer, Plugin, PluginCapability, Session, SwitchOutcome, SwitchProgress,
     MEMBERSHIP_TYPE_KEY,
 };
 use crate::store::AppState;
@@ -44,6 +44,97 @@ pub(crate) fn emit_switch_progress(
             status,
         },
     );
+}
+
+pub(crate) fn spawn_imported_refresh(app: AppHandle, account: Account) {
+    if account.import_type == ImportType::ApiKey {
+        return;
+    }
+    match account.application {
+        ApplicationKind::Grok => crate::grok::snapshot::spawn_imported_refresh(app, account),
+        ApplicationKind::Cursor => {
+            tauri::async_runtime::spawn_blocking(move || {
+                let session = app
+                    .state::<AppState>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|mut controller| controller.subscription_session(&account.id).ok());
+                let Some(session) = session else {
+                    return;
+                };
+                match fetch_cursor_usage(&account, &session) {
+                    Ok((usage, raw)) => {
+                        if let Ok(mut controller) = app.state::<AppState>().0.lock() {
+                            let _ = controller.save_cursor_usage(&account.id, usage, raw);
+                        }
+                    }
+                    Err(error)
+                        if error.to_string().contains("失效")
+                            || error.to_string().contains("过期") =>
+                    {
+                        if let Ok(mut controller) = app.state::<AppState>().0.lock() {
+                            let _ = controller.mark_token_invalid(&account.id);
+                        }
+                    }
+                    Err(_) => {
+                        if let Ok(summary) = fetch_cursor_subscription(&session) {
+                            if let Ok(mut controller) = app.state::<AppState>().0.lock() {
+                                let _ = controller.save_subscription(&account.id, summary);
+                            }
+                        }
+                    }
+                }
+                refresh_tray(&app);
+                let _ = app.emit("accounts-changed", ());
+            });
+        }
+        ApplicationKind::Codex => {
+            tauri::async_runtime::spawn_blocking(move || {
+                let session = app
+                    .state::<AppState>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|mut controller| controller.subscription_session(&account.id).ok());
+                let Some(session) = session else {
+                    return;
+                };
+                if crate::codex::session::import_type(&session) != ImportType::OAuth {
+                    return;
+                }
+                match crate::codex::oauth::refresh_session(&session) {
+                    Ok((next, quota)) => {
+                        if let Ok(mut controller) = app.state::<AppState>().0.lock() {
+                            let label = controller.account(&account.id).ok().map(|item| item.label);
+                            let _ = controller.save_imported_session(
+                                ApplicationKind::Codex,
+                                label,
+                                next,
+                                ImportType::OAuth,
+                            );
+                            if let Some((summary, usage)) = quota {
+                                let _ = controller.save_subscription(&account.id, summary);
+                                let _ = controller.save_cursor_usage_summary(&account.id, usage);
+                            }
+                        }
+                    }
+                    Err(error)
+                        if error.to_string().contains("失败")
+                            || error.to_string().contains("过期")
+                            || error.to_string().contains("失效") =>
+                    {
+                        if let Ok(mut controller) = app.state::<AppState>().0.lock() {
+                            let _ = controller.mark_token_invalid(&account.id);
+                        }
+                    }
+                    Err(_) => {}
+                }
+                refresh_tray(&app);
+                let _ = app.emit("accounts-changed", ());
+            });
+        }
+    }
 }
 
 #[tauri::command]
@@ -1371,8 +1462,6 @@ pub(crate) fn set_preserve_codex_official_auth(
         .map_err(error_text)
 }
 
-
-
 #[tauri::command]
 pub(crate) fn move_database(
     directory: String,
@@ -1450,20 +1539,38 @@ pub(crate) fn refresh_account_subscription(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> std::result::Result<(), String> {
-    let (application, session) = {
-        let mut controller = state
-            .0
-            .lock()
-            .map_err(|_| "账户存储不可用".to_string())?;
+    let (application, account, session) = {
+        let mut controller = state.0.lock().map_err(|_| "账户存储不可用".to_string())?;
         let account = controller.account(&id).map_err(error_text)?;
         let session = controller.subscription_session(&id).map_err(error_text)?;
-        (account.application, session)
+        (account.application, account, session)
     };
-    let summary = match application {
-        ApplicationKind::Grok => fetch_grok_subscription(&session),
-        _ => fetch_cursor_subscription(&session),
-    };
-    let summary = match summary {
+    if application == ApplicationKind::Grok {
+        match fetch_grok_snapshot(&account, &session) {
+            Ok(snapshot) => {
+                state
+                    .0
+                    .lock()
+                    .map_err(|_| "账户存储不可用".to_string())?
+                    .save_grok_snapshot(&id, snapshot)
+                    .map_err(error_text)?;
+            }
+            Err(error) => {
+                if error.to_string().contains("失效") || error.to_string().contains("过期") {
+                    let _ = state
+                        .0
+                        .lock()
+                        .ok()
+                        .and_then(|mut controller| controller.mark_token_invalid(&id).ok());
+                    let _ = app.emit("accounts-changed", ());
+                }
+                return Err(error_text(error));
+            }
+        }
+        let _ = app.emit("accounts-changed", ());
+        return Ok(());
+    }
+    let summary = match fetch_cursor_subscription(&session) {
         Ok(summary) => summary,
         Err(error) => {
             if error.to_string().contains("失效") || error.to_string().contains("过期") {
@@ -1684,8 +1791,9 @@ pub(crate) async fn refresh_grok_bot_accounts(
                         break;
                     };
                     let refreshed = match application {
-                        ApplicationKind::Grok => fetch_grok_subscription(&session)
-                            .map(|summary| (summary, None, None)),
+                        ApplicationKind::Grok => {
+                            fetch_grok_subscription(&session).map(|summary| (summary, None, None))
+                        }
                         _ => fetch_grok_bot_quota_fast(&session)
                             .map(|(summary, grok, sand)| (summary, grok, sand)),
                     };
@@ -1765,7 +1873,10 @@ pub(crate) async fn refresh_all_grok_accounts(
         let mut missing = Vec::new();
         for account in controller.accounts(ApplicationKind::Grok) {
             match controller.subscription_session(&account.id) {
-                Ok(session) => sessions.push((account.id, session)),
+                Ok(session) => match controller.account(&account.id) {
+                    Ok(full) => sessions.push((full, session)),
+                    Err(_) => missing.push(account.id),
+                },
                 Err(_) => missing.push(account.id),
             }
         }
@@ -1804,12 +1915,13 @@ pub(crate) async fn refresh_all_grok_accounts(
                 let jobs = Arc::clone(&job_receiver);
                 let results = result_sender.clone();
                 thread::spawn(move || loop {
-                    let Some((id, session)) =
+                    let Some((account, session)) =
                         jobs.lock().ok().and_then(|receiver| receiver.recv().ok())
                     else {
                         break;
                     };
-                    let refreshed = fetch_grok_subscription(&session);
+                    let id = account.id.clone();
+                    let refreshed = fetch_grok_snapshot(&account, &session);
                     let _ = results.send((id, refreshed));
                 })
             })
@@ -1854,9 +1966,9 @@ pub(crate) async fn refresh_all_grok_accounts(
             let _ = controller.mark_token_invalid(&id);
         }
     }
-    for (id, summary) in updates {
+    for (id, snapshot) in updates {
         controller
-            .save_subscription(&id, summary)
+            .save_grok_snapshot(&id, snapshot)
             .map_err(error_text)?;
     }
     let _ = app.emit("accounts-changed", ());
@@ -1962,10 +2074,7 @@ pub(crate) async fn get_grok_usage(
     state: State<'_, AppState>,
 ) -> std::result::Result<CursorUsageDetails, String> {
     let (account, session) = {
-        let mut controller = state
-            .0
-            .lock()
-            .map_err(|_| "账户存储不可用".to_string())?;
+        let mut controller = state.0.lock().map_err(|_| "账户存储不可用".to_string())?;
         let account = controller.account(&id).map_err(error_text)?;
         if account.application != ApplicationKind::Grok {
             return Err("仅支持 Grok Build 账号用量查询。".into());
@@ -1974,10 +2083,10 @@ pub(crate) async fn get_grok_usage(
         (account, session)
     };
     let usage_result =
-        tauri::async_runtime::spawn_blocking(move || fetch_grok_usage(&account, &session))
+        tauri::async_runtime::spawn_blocking(move || fetch_grok_snapshot(&account, &session))
             .await
             .map_err(|error| error.to_string())?;
-    let (usage, raw) = match usage_result {
+    let snapshot = match usage_result {
         Ok(value) => value,
         Err(error) => {
             let message = error.to_string();
@@ -1990,11 +2099,12 @@ pub(crate) async fn get_grok_usage(
             return Err(error_text(error));
         }
     };
+    let usage = snapshot.usage.clone();
     state
         .0
         .lock()
         .map_err(|_| "账户存储不可用".to_string())?
-        .save_grok_usage(&id, usage.clone(), raw)
+        .save_grok_snapshot(&id, snapshot)
         .map_err(error_text)?;
     let _ = app.emit("accounts-changed", ());
     Ok(usage)
@@ -2096,6 +2206,7 @@ pub(crate) fn import_current_account(
         .map_err(error_text)?;
     refresh_tray(&app);
     let _ = app.emit("accounts-changed", ());
+    spawn_imported_refresh(app.clone(), account.clone());
     Ok(account)
 }
 
@@ -2124,6 +2235,7 @@ pub(crate) async fn import_token_or_json(
         .map_err(|error| error.to_string())??;
         refresh_tray(&app);
         let _ = app.emit("accounts-changed", ());
+        spawn_imported_refresh(app.clone(), account.clone());
         return Ok(account);
     }
     if kind == ApplicationKind::Grok {
@@ -2144,13 +2256,14 @@ pub(crate) async fn import_token_or_json(
         .map_err(|error| error.to_string())??;
         refresh_tray(&app);
         let _ = app.emit("accounts-changed", ());
+        spawn_imported_refresh(app.clone(), account.clone());
         return Ok(account);
     }
     if kind != ApplicationKind::Cursor {
         return Err(AppError::ComingSoon.to_string());
     }
     let import_app = app.clone();
-    let (account, usage_session) = tauri::async_runtime::spawn_blocking(move || {
+    let account = tauri::async_runtime::spawn_blocking(move || {
         let mut session = Session::from_import(&payload).map_err(error_text)?;
         // An exported session's membership cache can be stale (commonly
         // "enterprise"). The background usage request is the source of truth.
@@ -2164,39 +2277,13 @@ pub(crate) async fn import_token_or_json(
         let account = controller
             .save_imported_session(kind, label, session, import_type)
             .map_err(error_text)?;
-        let account_id = account.id.clone();
-        let account = controller.account(&account_id).unwrap_or(account);
-        let session = controller
-            .subscription_session(&account_id)
-            .map_err(error_text)?;
-        Ok::<(Account, (Account, Session)), String>((account.clone(), (account, session)))
+        Ok::<Account, String>(account)
     })
     .await
     .map_err(|error| error.to_string())??;
     refresh_tray(&app);
     let _ = app.emit("accounts-changed", ());
-    {
-        let usage_app = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let (usage_account, usage_session) = usage_session;
-            match fetch_cursor_usage(&usage_account, &usage_session) {
-                Ok((usage, raw)) => {
-                    if let Ok(mut controller) = usage_app.state::<AppState>().0.lock() {
-                        let _ = controller.save_cursor_usage(&usage_account.id, usage, raw);
-                    }
-                }
-                Err(error)
-                    if error.to_string().contains("失效") || error.to_string().contains("过期") =>
-                {
-                    if let Ok(mut controller) = usage_app.state::<AppState>().0.lock() {
-                        let _ = controller.mark_token_invalid(&usage_account.id);
-                    }
-                }
-                Err(_) => {}
-            }
-            let _ = usage_app.emit("accounts-changed", ());
-        });
-    }
+    spawn_imported_refresh(app.clone(), account.clone());
     Ok(account)
 }
 
@@ -2252,7 +2339,6 @@ pub(crate) fn open_official_login_url(
     open_browser(&url).map_err(error_text)
 }
 
-
 #[tauri::command]
 pub(crate) fn open_external_url(url: String) -> std::result::Result<(), String> {
     let trimmed = url.trim();
@@ -2261,8 +2347,6 @@ pub(crate) fn open_external_url(url: String) -> std::result::Result<(), String> 
     }
     open_browser(trimmed).map_err(error_text)
 }
-
-
 
 #[tauri::command]
 pub(crate) fn delete_account(
@@ -2340,13 +2424,13 @@ pub(crate) fn force_restart(
                 .account(&id)
                 .map_err(error_text)
                 .and_then(|account| {
-                    DesktopApp::after_switch(account.application).ok_or_else(|| {
-                        "该应用没有可强制重启的桌面客户端。".into()
-                    })
+                    DesktopApp::after_switch(account.application)
+                        .ok_or_else(|| "该应用没有可强制重启的桌面客户端。".into())
                 })
         })?;
     emit_switch_progress(&app, &operation_id, &id, "terminating", 25, "running");
-    if let Err(error) = desktop::terminate(desktop).and_then(|_| desktop::wait_until_stopped(desktop))
+    if let Err(error) =
+        desktop::terminate(desktop).and_then(|_| desktop::wait_until_stopped(desktop))
     {
         emit_switch_progress(&app, &operation_id, &id, "error", 100, "error");
         return Err(error_text(error));
@@ -2386,14 +2470,23 @@ fn grok_bot_plan_allowed(plan: Option<&str>) -> bool {
 }
 
 fn grok_bot_session(id: &str, state: &State<'_, AppState>) -> std::result::Result<Session, String> {
-    state.0.lock().map_err(|_| "账户存储不可用".to_string()).and_then(|controller| {
-        let account = controller.account(id).map_err(error_text)?;
-        if !matches!(account.application, ApplicationKind::Cursor | ApplicationKind::Grok) {
-            return Err("仅 Cursor 或 Grok Build 账号可启动 Grok Bot。".into());
-        }
-        if !grok_bot_plan_allowed(account.subscription.plan.as_deref()) { return Err("Grok Bot 不适用于 Free 账号。".into()); }
-        controller.load_session(id).map_err(error_text)
-    })
+    state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())
+        .and_then(|controller| {
+            let account = controller.account(id).map_err(error_text)?;
+            if !matches!(
+                account.application,
+                ApplicationKind::Cursor | ApplicationKind::Grok
+            ) {
+                return Err("仅 Cursor 或 Grok Build 账号可启动 Grok Bot。".into());
+            }
+            if !grok_bot_plan_allowed(account.subscription.plan.as_deref()) {
+                return Err("Grok Bot 不适用于 Free 账号。".into());
+            }
+            controller.load_session(id).map_err(error_text)
+        })
 }
 
 #[tauri::command]
@@ -2505,9 +2598,11 @@ pub(crate) async fn rename_grok_bot_session(
     id: String,
     title: String,
 ) -> std::result::Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || crate::grok_bot_sessions::rename_session(&id, &title))
-        .await
-        .map_err(|error| error.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::grok_bot_sessions::rename_session(&id, &title)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[derive(Clone, serde::Serialize)]

@@ -66,6 +66,7 @@ export type Account = {
   usage?: { kind: "currency" | "percent" | "requests"; used: number; limit?: number; percent: number };
   grokBotUsage?: { kind: "percent"; used: number; percent: number };
   grokBotResetAt?: string;
+  resetAt?: string;
   daysRemaining?: number;
   isCurrent: boolean;
   isGrokBotCurrent?: boolean;
@@ -88,6 +89,7 @@ export type CursorUsageDetails = {
   onDemand?: { kind: "currency"; used: number; limit?: number; percent: number };
   grokBot?: { kind: "percent"; used: number; percent: number };
   grokBotResetAt?: string;
+  products?: { name: string; percent: number }[];
   models: { name: string; requests: number }[];
   weekly: { date: string; requests: number; onDemandCents: number; isOnDemand: boolean }[];
   weeklyAvailable: boolean;

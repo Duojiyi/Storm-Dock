@@ -8,12 +8,7 @@ use crate::models::Session;
 pub(crate) const STORM_DOCK_SQL_HEADER: &str = "-- Storm Dock SQLite 导出";
 pub(crate) const CC_SWITCH_SQL_HEADER: &str = "-- CC Switch SQLite 导出";
 
-const DUMP_TABLES: &[&str] = &[
-    "accounts",
-    "sessions",
-    "application_state",
-    "app_kv",
-];
+const DUMP_TABLES: &[&str] = &["accounts", "sessions", "application_state", "app_kv"];
 
 pub(crate) enum BackupKind {
     StormDockSql,
