@@ -32,6 +32,7 @@ pub(crate) struct OauthLoginState {
     generation: AtomicU64,
     login_url: Mutex<Option<String>>,
     user_code: Mutex<Option<String>>,
+    browser: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -50,8 +51,14 @@ pub(crate) struct CursorOauthHandshake {
 }
 
 impl OauthLoginState {
-    pub(crate) fn begin(&self) -> u64 {
-        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    pub(crate) fn begin_with_browser(&self, browser: Option<String>) -> u64 {
+        let id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *self
+            .browser
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(crate::browser::normalize_id(browser.as_deref()));
+        id
     }
 
     pub(crate) fn is_active(&self, id: u64) -> bool {
@@ -87,6 +94,15 @@ impl OauthLoginState {
             .clone()
     }
 
+    pub(crate) fn browser(&self) -> String {
+        crate::browser::normalize_id(
+            self.browser
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .as_deref(),
+        )
+    }
+
     pub(crate) fn cancel(&self) {
         self.generation.fetch_add(1, Ordering::SeqCst);
         *self
@@ -95,6 +111,10 @@ impl OauthLoginState {
             .unwrap_or_else(|error| error.into_inner()) = None;
         *self
             .user_code
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .browser
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = None;
     }
@@ -107,6 +127,10 @@ impl OauthLoginState {
                 .unwrap_or_else(|error| error.into_inner()) = None;
             *self
                 .user_code
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
+            *self
+                .browser
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = None;
         }
@@ -157,21 +181,21 @@ pub(crate) fn emit_official_login_status(
 }
 
 pub(crate) fn open_browser(url: &str) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("open").arg(url).status();
-    #[cfg(target_os = "windows")]
-    let status = std::process::Command::new("rundll32")
-        .args(["url.dll,FileProtocolHandler", url])
-        .status();
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let status: std::io::Result<std::process::ExitStatus> =
-        Err(std::io::Error::other("unsupported OS"));
-    match status {
-        Ok(status) if status.success() => Ok(()),
-        _ => Err(AppError::Message(
-            "无法打开浏览器，请手动打开登录链接。".into(),
-        )),
+    crate::browser::open(url, crate::browser::DEFAULT_BROWSER_ID)
+}
+
+pub(crate) fn wait_if_active(app: &AppHandle, login_id: u64, duration: Duration) -> Result<()> {
+    const STEP: Duration = Duration::from_millis(50);
+    let mut remaining = duration;
+    while !remaining.is_zero() {
+        if !app.state::<OauthLoginState>().is_active(login_id) {
+            return Err(AppError::LoginCancelled);
+        }
+        let chunk = remaining.min(STEP);
+        std::thread::sleep(chunk);
+        remaining -= chunk;
     }
+    Ok(())
 }
 
 pub(crate) fn poll_cursor_oauth(
@@ -200,7 +224,7 @@ pub(crate) fn poll_cursor_oauth(
                 }
             }
         }
-        std::thread::sleep(delay);
+        wait_if_active(app, login_id, delay)?;
         delay = delay.mul_f32(1.2).min(Duration::from_secs(10));
     }
     Err(AppError::LoginTimeout)
@@ -351,7 +375,7 @@ pub(crate) fn complete_cursor_oauth(
     let oauth = app.state::<OauthLoginState>();
     oauth.set_url(login_id, handshake.login_url.clone())?;
     emit_official_login_status(&app, "started", Some(handshake.login_url.clone()));
-    let _ = open_browser(&handshake.login_url);
+    let _ = crate::browser::open(&handshake.login_url, &oauth.browser());
     emit_official_login_status(&app, "waiting", Some(handshake.login_url.clone()));
     let tokens = poll_cursor_oauth(&handshake, login_id, &app)?;
     if !oauth.is_active(login_id) {

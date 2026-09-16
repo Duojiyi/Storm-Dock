@@ -45,7 +45,7 @@ function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport
     <div className={styles.accountCopy}><strong>{account.label}</strong><div className={styles.accountMeta}>
       {kind === "grok" && planBadge ? <span className={`${styles.kindBadge} ${styles[`plan-${planBadge.plan}`] ?? styles.kindGrok}`}>{planBadge.name}</span> : kind !== "cursor" ? <span className={`${styles.kindBadge} ${isApiKey ? styles.kindApiKey : styles.kindAccount}`}>{isApiKey ? <KeyRound aria-hidden="true" size={11} /> : <UserRound aria-hidden="true" size={11} />}{t(accountKindKey(account))}</span> : null}
       {kind === "grok" && subscription ? <span className={styles.metaBadge}>{subscription.expiry}</span> : null}
-      {kind !== "grok" && subscription && <span className={`${styles.metaBadge} ${styles[`plan-${subscription.plan}`] ?? styles.planDefault}`}>{subscription.name} · {subscription.expiry}</span>}
+      {kind !== "grok" && !isApiKey && subscription && <span className={`${styles.metaBadge} ${styles[`plan-${subscription.plan}`] ?? styles.planDefault}`}>{subscription.name} · {subscription.expiry}</span>}
       {usage && <span className={styles.metaBadge}>{usage}</span>}
       {grokBotUsage && <span className={styles.metaBadge}>{grokBotUsage}</span>}
       {host && <span className={styles.metaBadge}>{host}</span>}

@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::codex::session::{oauth_auth_json, session_from_auth};
 use crate::cursor::oauth::{
-    emit_official_login_status, open_browser, OauthLoginState, OfficialLoginStatus,
+    emit_official_login_status, OauthLoginState, OfficialLoginStatus,
 };
 use crate::cursor::session::jwt_claims;
 use crate::error::{AppError, Result};
@@ -65,7 +65,7 @@ pub(crate) fn complete_codex_oauth(
         Some(DEVICE_VERIFICATION_URL.into()),
         Some(device.user_code.clone()),
     );
-    let _ = open_browser(DEVICE_VERIFICATION_URL);
+    let _ = crate::browser::open(DEVICE_VERIFICATION_URL, &oauth.browser());
     emit_codex_login_status(
         &app,
         "waiting",
@@ -161,7 +161,7 @@ fn poll_device_flow(
         }
         match poll_once(device) {
             Ok(tokens) => return Ok(tokens),
-            Err(_) => std::thread::sleep(interval),
+            Err(_) => crate::cursor::oauth::wait_if_active(app, login_id, interval)?,
         }
     }
     Err(AppError::LoginTimeout)

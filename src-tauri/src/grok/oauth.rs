@@ -4,9 +4,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
-use crate::cursor::oauth::{
-    emit_official_login_status, open_browser, OauthLoginState, OfficialLoginStatus,
-};
+use crate::cursor::oauth::{emit_official_login_status, OauthLoginState, OfficialLoginStatus};
 use crate::error::{AppError, Result};
 use crate::grok::session::{
     email_from_jwt, oauth_auth_json, session_from_auth, user_id_from_jwt, XAI_CLIENT_ID, XAI_ISSUER,
@@ -75,7 +73,7 @@ pub(crate) fn complete_grok_oauth(
         Some(device.verification_uri.clone()),
         Some(device.user_code.clone()),
     );
-    let _ = open_browser(&device.verification_uri);
+    let _ = crate::browser::open(&device.verification_uri, &oauth.browser());
     emit_grok_login_status(
         &app,
         "waiting",
@@ -179,7 +177,7 @@ fn poll_device_flow(
             Err(AppError::LoginTimeout) => return Err(AppError::LoginTimeout),
             Err(AppError::LoginCancelled) => return Err(AppError::LoginCancelled),
             Err(error) if is_denied(&error) => return Err(error),
-            Err(_) => std::thread::sleep(device.interval),
+            Err(_) => crate::cursor::oauth::wait_if_active(app, login_id, device.interval)?,
         }
     }
     Err(AppError::LoginTimeout)

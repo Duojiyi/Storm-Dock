@@ -2288,13 +2288,19 @@ pub(crate) async fn import_token_or_json(
 }
 
 #[tauri::command]
+pub(crate) fn list_login_browsers() -> Vec<crate::browser::LoginBrowser> {
+    crate::browser::list()
+}
+
+#[tauri::command]
 pub(crate) async fn start_official_login(
     kind: ApplicationKind,
     label: Option<String>,
+    browser: Option<String>,
     app: AppHandle,
 ) -> std::result::Result<Account, String> {
     if kind == ApplicationKind::Codex {
-        let login_id = app.state::<OauthLoginState>().begin();
+        let login_id = app.state::<OauthLoginState>().begin_with_browser(browser);
         let worker = app.clone();
         return tauri::async_runtime::spawn_blocking(move || {
             crate::codex::oauth::complete_codex_oauth(label, login_id, worker)
@@ -2304,7 +2310,7 @@ pub(crate) async fn start_official_login(
         .map_err(error_text);
     }
     if kind == ApplicationKind::Grok {
-        let login_id = app.state::<OauthLoginState>().begin();
+        let login_id = app.state::<OauthLoginState>().begin_with_browser(browser);
         let worker = app.clone();
         return tauri::async_runtime::spawn_blocking(move || {
             crate::grok::oauth::complete_grok_oauth(label, login_id, worker)
@@ -2316,7 +2322,7 @@ pub(crate) async fn start_official_login(
     if kind != ApplicationKind::Cursor {
         return Err(AppError::ComingSoon.to_string());
     }
-    let login_id = app.state::<OauthLoginState>().begin();
+    let login_id = app.state::<OauthLoginState>().begin_with_browser(browser);
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || complete_cursor_oauth(label, login_id, worker))
         .await
@@ -2336,7 +2342,7 @@ pub(crate) fn open_official_login_url(
     let url = state
         .url()
         .ok_or_else(|| "没有进行中的官方登录。".to_string())?;
-    open_browser(&url).map_err(error_text)
+    crate::browser::open(&url, &state.browser()).map_err(error_text)
 }
 
 #[tauri::command]

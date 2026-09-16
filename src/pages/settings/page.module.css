@@ -315,6 +315,12 @@
 
 .menuItem[data-highlighted] { background: var(--info-bg); color: var(--info); }
 
+.menuSeparator {
+  background: var(--border);
+  height: 1px;
+  margin: 4px 6px;
+}
+
 .toastViewport {
   bottom: calc(24px + var(--download-dock-offset, 0px));
   display: grid;

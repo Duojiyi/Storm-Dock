@@ -4,9 +4,10 @@ import * as Tabs from "@radix-ui/react-tabs";
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors } from "@dnd-kit/core";
 import { SortableContext, arrayMove, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { ArrowLeft, Check, ChevronDown, Database, Download, FolderSync, GripVertical, KeyRound, Languages, LayoutList, Monitor, PanelTop, Power, RefreshCw } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Database, Download, FolderSync, Globe, GripVertical, KeyRound, Languages, LayoutList, Monitor, PanelTop, Power, RefreshCw } from "lucide-react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,6 +18,13 @@ import i18n from "../../i18n";
 import { exportDatabase, getDatabasePath, getPreserveCodexOfficialAuth, importDatabase, moveDatabase, setPreserveCodexOfficialAuth } from "../../lib/api";
 import { getCloseBehavior, setCloseBehavior, type CloseBehavior } from "../../lib/closeBehavior";
 import { getHomeTabs, resolvedHomePath, setHomeTabs, type HomeTabId, type HomeTabPref } from "../../lib/homeTabs";
+import {
+  ASK_BROWSER,
+  LAST_BROWSER,
+  getLoginBrowserPref,
+  setLoginBrowserPref,
+  type LoginBrowser,
+} from "../../lib/loginBrowser";
 import { getPreference, setPreference, type ThemePreference } from "../../lib/theme";
 import { syncDocumentAppKind } from "../../lib/types";
 import logo from "../../assets/logo.svg";
@@ -95,6 +103,34 @@ function HomeTabsSettings() {
         </div>
       </SortableContext>
     </DndContext>
+  </div>;
+}
+
+function LoginBrowserSettings() {
+  const { t } = useTranslation();
+  const [pref, setPref] = useState(getLoginBrowserPref);
+  const [browsers, setBrowsers] = useState<LoginBrowser[]>([{ id: "default", name: "System default" }]);
+  useEffect(() => {
+    void invoke<LoginBrowser[]>("list_login_browsers")
+      .then((items) => { if (items.length > 0) setBrowsers(items); })
+      .catch(() => {});
+  }, []);
+  const modes = [
+    { id: ASK_BROWSER, label: t("loginBrowserAsk") },
+    { id: LAST_BROWSER, label: t("loginBrowserLast") }
+  ];
+  const browserLabel = (id: string) => id === "default" ? t("systemDefaultBrowser") : browsers.find((item) => item.id === id)?.name ?? id;
+  const currentLabel = pref === ASK_BROWSER ? t("loginBrowserAsk") : pref === LAST_BROWSER ? t("loginBrowserLast") : browserLabel(pref);
+  const select = (id: string) => {
+    setLoginBrowserPref(id);
+    setPref(id);
+  };
+  return <div className={styles.row}><div className={styles.settingCopy}><span className={styles.icon}><Globe aria-hidden="true" size={20} /></span><div><h2>{t("loginBrowser")}</h2><p>{t("loginBrowserDescription")}</p></div></div>
+    <DropdownMenu.Root><DropdownMenu.Trigger className={styles.languageTrigger}><span>{currentLabel}</span><ChevronDown aria-hidden="true" size={16} /></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content align="end" className={styles.menu} sideOffset={6}>
+      {modes.map((item) => <DropdownMenu.Item className={styles.menuItem} key={item.id} onSelect={() => select(item.id)}><span>{item.label}</span>{item.id === pref && <Check aria-hidden="true" size={16} />}</DropdownMenu.Item>)}
+      <DropdownMenu.Separator className={styles.menuSeparator} />
+      {browsers.map((item) => <DropdownMenu.Item className={styles.menuItem} key={item.id} onSelect={() => select(item.id)}><span>{browserLabel(item.id)}</span>{item.id === pref && <Check aria-hidden="true" size={16} />}</DropdownMenu.Item>)}
+    </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
   </div>;
 }
 
@@ -290,6 +326,7 @@ function SettingsPage() {
               </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
             </div>
           </div>
+          <LoginBrowserSettings />
           <div className={styles.sectionTitle}><KeyRound aria-hidden="true" size={20} /><h2>{t("codexAppEnhancement")}</h2></div>
           <div className={styles.behaviorList}>
             <div className={styles.row}><div className={styles.settingCopy}><span className={styles.icon}><KeyRound aria-hidden="true" size={20} /></span><div><h2>{t("preserveCodexOfficialAuth")}</h2><p>{t("preserveCodexOfficialAuthDescription")}</p></div></div><button aria-checked={preserveCodexAuth} className={styles.switch} onClick={() => void togglePreserveCodexAuth()} role="switch" type="button"><span /></button></div>

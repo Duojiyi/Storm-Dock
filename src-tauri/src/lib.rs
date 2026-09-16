@@ -1,4 +1,5 @@
 mod apps;
+mod browser;
 mod codex;
 mod codex_sessions;
 mod commands;
@@ -320,6 +321,7 @@ pub fn run() {
             commands::reorder_accounts,
             commands::import_current_account,
             commands::import_token_or_json,
+            commands::list_login_browsers,
             commands::start_official_login,
             commands::cancel_official_login,
             commands::open_official_login_url,

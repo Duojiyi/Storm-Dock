@@ -1,0 +1,150 @@
+.overlay {
+  background: var(--overlay);
+  inset: 0;
+  position: fixed;
+  z-index: 30;
+}
+
+.content {
+  background: var(--solid);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 18px 42px var(--shadow-strong);
+  left: 50%;
+  max-width: 380px;
+  padding: 20px;
+  position: fixed;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: calc(100vw - 48px);
+  z-index: 31;
+}
+
+.content h2 {
+  font-size: 16px;
+  margin: 0 0 6px;
+}
+
+.content p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.list {
+  background: var(--track);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 14px 0 0;
+  max-height: min(50vh, 340px);
+  overflow: auto;
+  padding: 4px;
+}
+
+.divider {
+  background: var(--border);
+  height: 1px;
+  margin: 4px 10px;
+}
+
+.row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--fg);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-height: 44px;
+  padding: 6px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.row:hover {
+  background: var(--hover);
+}
+
+.row:focus-visible {
+  background: var(--info-bg);
+  box-shadow: inset 0 0 0 1px var(--info-border);
+  outline: none;
+}
+
+.row:disabled {
+  opacity: 0.55;
+}
+
+.icon {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: none;
+  height: 28px;
+  justify-content: center;
+  overflow: hidden;
+  width: 28px;
+}
+
+.icon img,
+.icon svg {
+  display: block;
+  height: 28px;
+  object-fit: contain;
+  width: 28px;
+}
+
+.arc {
+  background: #2b2b2b;
+}
+
+.copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.name {
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 15px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.cancel {
+  background: var(--solid);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.cancel:hover {
+  background: var(--hover);
+}
