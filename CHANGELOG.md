@@ -6,6 +6,24 @@ Storm Dock 的重要变更记录在此。
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-09-16
+
+### Added
+
+- 官方登录支持选择浏览器（系统默认 / Chrome / Edge / Safari / Firefox / Brave / Arc）；Cursor、ChatGPT、Grok OAuth 共用；设置可配置「每次询问」「记住上次」或固定浏览器。
+- 设置页新增顶部标签栏调整：可拖拽排序首页标签。
+
+### Changed
+
+- 优化应用启动逻辑，统一 HTTP 请求层。
+- 优化设置页排版。
+- Grok 订阅有效期改为官方有效订阅到期日（不再误用周额度窗口）；额度展示官方总池百分比；用量详情补齐 Build/Imagine 拆分与重置时间。
+
+### Fixed
+
+- 修复主题「跟随系统」无效。
+- ChatGPT API Key 账号列表不再显示「未知订阅」。
+
 ## [1.5.3] - 2026-09-14
 
 ### Fixed
@@ -86,7 +104,8 @@ Storm Dock 的重要变更记录在此。
 4. CI 发布安装包与 latest.json；notes 优先取本 CHANGELOG 对应小节。
 -->
 
-[Unreleased]: https://github.com/tangsj-hub/Storm-Dock/compare/v1.5.3...HEAD
+[Unreleased]: https://github.com/tangsj-hub/Storm-Dock/compare/v1.5.4...HEAD
+[1.5.4]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.4
 [1.5.3]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.3
 [1.5.2]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.2
 [1.5.1]: https://github.com/tangsj-hub/Storm-Dock/releases/tag/v1.5.1
