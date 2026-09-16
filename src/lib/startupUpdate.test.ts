@@ -3,10 +3,21 @@ import type { UpdateCheckResult } from "./updater";
 import {
   rememberDismissedStartupUpdate,
   readDismissedStartupUpdateVersion,
-  shouldPromptStartupUpdate
+  shouldPromptStartupUpdate,
+  shouldRunStartupUpdateCheck
 } from "./startupUpdate";
 
 const available = (version: string): UpdateCheckResult => ({ status: "available", version });
+
+describe("shouldRunStartupUpdateCheck", () => {
+  it("runs inside the Tauri webview", () => {
+    expect(shouldRunStartupUpdateCheck({ hasTauri: true })).toBe(true);
+  });
+
+  it("skips plain browser / non-Tauri previews", () => {
+    expect(shouldRunStartupUpdateCheck({ hasTauri: false })).toBe(false);
+  });
+});
 
 describe("shouldPromptStartupUpdate", () => {
   it("does not prompt when the app is already up to date", () => {

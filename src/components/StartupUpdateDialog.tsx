@@ -1,123 +1,99 @@
-import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import * as Toast from "@radix-ui/react-toast";
+import { Info, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { createRoot } from "react-dom/client";
 import { useTranslation } from "react-i18next";
-import { checkForAppUpdate, installUpdateAndRestart } from "../lib/updater";
+import { checkForAppUpdate } from "../lib/updater";
 import {
+  STARTUP_UPDATE_DELAY_MS,
   readDismissedStartupUpdateVersion,
   rememberDismissedStartupUpdate,
-  shouldPromptStartupUpdate
+  shouldPromptStartupUpdate,
+  shouldRunStartupUpdateCheck
 } from "../lib/startupUpdate";
-import styles from "./StartupUpdateDialog.module.css";
+import toastStyles from "./ToastMessage.module.css";
+
+/** Same SPA navigation pattern as the home settings gear (`/settings.html?kind=…`). */
+export function settingsAboutPath(search = window.location.search) {
+  const params = new URLSearchParams();
+  const kind = new URLSearchParams(search).get("kind");
+  if (kind) params.set("kind", kind);
+  params.set("tab", "about");
+  return `/settings.html?${params}`;
+}
 
 export function StartupUpdateDialog() {
   const { t } = useTranslation();
-  const [update, setUpdate] = useState<{ version: string; notes?: string }>();
+  const [update, setUpdate] = useState<{ version: string }>();
   const [open, setOpen] = useState(false);
-  const [installing, setInstalling] = useState(false);
-  const [error, setError] = useState<string>();
-  const dismissed = useRef(false);
-  const installButtonRef = useRef<HTMLButtonElement>(null);
+  const skipRemember = useRef(false);
 
   useEffect(() => {
+    if (!shouldRunStartupUpdateCheck()) return;
+
     let cancelled = false;
-    void (async () => {
-      try {
-        const result = await checkForAppUpdate();
-        if (cancelled) return;
-        if (
-          !shouldPromptStartupUpdate({
-            result,
-            dismissedVersion: readDismissedStartupUpdateVersion()
-          })
-        ) {
-          return;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await checkForAppUpdate();
+          if (cancelled) return;
+          if (
+            !shouldPromptStartupUpdate({
+              result,
+              dismissedVersion: readDismissedStartupUpdateVersion()
+            })
+          ) {
+            return;
+          }
+          if (result.status !== "available") return;
+          setUpdate({ version: result.version });
+          setOpen(true);
+        } catch {
+          /* ignore check failures silently */
         }
-        if (result.status !== "available") return;
-        setUpdate({ version: result.version, notes: result.notes });
-        setOpen(true);
-      } catch {
-        // Startup checks are optional; stay quiet if the network or updater is unavailable.
-      }
-    })();
+      })();
+    }, STARTUP_UPDATE_DELAY_MS);
+
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, []);
 
-  const dismiss = () => {
-    if (installing) return;
-    if (update && !dismissed.current) {
-      dismissed.current = true;
-      rememberDismissedStartupUpdate(update.version);
-    }
-    setOpen(false);
-  };
-
-  const install = async () => {
-    if (!update || installing) return;
-    setInstalling(true);
-    setError(undefined);
-    try {
-      await installUpdateAndRestart();
-    } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
-      setError(message);
-      setInstalling(false);
-    }
-  };
+  if (!update) return null;
 
   return (
-    <AlertDialog.Root
+    <Toast.Root
+      className={`${toastStyles.toast} ${toastStyles.info}`}
+      duration={Infinity}
       onOpenChange={(next) => {
-        if (!next) dismiss();
+        if (next) {
+          setOpen(true);
+          return;
+        }
+        if (!skipRemember.current) {
+          rememberDismissedStartupUpdate(update.version);
+        }
+        skipRemember.current = false;
+        setOpen(false);
       }}
       open={open}
     >
-      <AlertDialog.Portal>
-        <AlertDialog.Overlay className={styles.dialogOverlay} />
-        <AlertDialog.Content
-          className={styles.dialogContent}
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            installButtonRef.current?.focus();
-          }}
-        >
-          <AlertDialog.Title>{t("updateAvailable", { version: update?.version ?? "" })}</AlertDialog.Title>
-          <AlertDialog.Description>{t("startupUpdateDescription")}</AlertDialog.Description>
-          {update?.notes ? <p className={styles.notes}>{update.notes}</p> : null}
-          {error ? <p className={styles.error}>{t("updateInstallFailed", { error })}</p> : null}
-          <div className={styles.dialogActions}>
-            <AlertDialog.Cancel asChild>
-              <button className={styles.later} disabled={installing} type="button">
-                {t("startupUpdateLater")}
-              </button>
-            </AlertDialog.Cancel>
-            <button
-              className={styles.install}
-              disabled={installing || !update}
-              onClick={() => void install()}
-              ref={installButtonRef}
-              type="button"
-            >
-              {installing
-                ? t("updateInstalling")
-                : t("updateDownloadInstall", { version: update?.version ?? "" })}
-            </button>
-          </div>
-        </AlertDialog.Content>
-      </AlertDialog.Portal>
-    </AlertDialog.Root>
+      <Info aria-hidden="true" size={17} />
+      <Toast.Description>{t("startupUpdateTitle")}</Toast.Description>
+      <Toast.Action
+        altText={t("startupUpdateGo")}
+        className={toastStyles.action}
+        onClick={() => {
+          skipRemember.current = true;
+          setOpen(false);
+          window.location.assign(settingsAboutPath());
+        }}
+      >
+        {t("startupUpdateGo")}
+      </Toast.Action>
+      <Toast.Close aria-label={t("startupUpdateLater")} className={toastStyles.close}>
+        <X aria-hidden="true" size={14} strokeWidth={2} />
+      </Toast.Close>
+    </Toast.Root>
   );
-}
-
-let mounted = false;
-
-export function mountStartupUpdateDialog() {
-  if (mounted || typeof document === "undefined") return;
-  mounted = true;
-  const host = document.createElement("div");
-  host.id = "startup-update-dialog-root";
-  document.body.appendChild(host);
-  createRoot(host).render(<StartupUpdateDialog />);
 }

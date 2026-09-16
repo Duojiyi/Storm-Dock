@@ -424,26 +424,20 @@
 .updateCard {
   background: var(--accent-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   margin-top: 12px;
   max-width: 420px;
   padding: 12px 14px;
   text-align: left;
+  width: 100%;
 }
 
 .updateAvailable {
   color: var(--fg);
   font-size: 13px;
   font-weight: 650;
-  margin: 0 0 6px;
-}
-
-.updateNotes {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.55;
-  margin: 0;
-  white-space: pre-wrap;
+  letter-spacing: 0.01em;
+  margin: 0 0 8px;
 }
 
 .updateError {

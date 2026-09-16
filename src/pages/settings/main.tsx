@@ -12,6 +12,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useTranslation } from "react-i18next";
+import { ReleaseNotes } from "../../components/ReleaseNotes";
 import { Toast, ToastMessage } from "../../components/ToastMessage";
 import { WindowDragSurface } from "../../components/WindowDragSurface";
 import i18n from "../../i18n";
@@ -132,6 +133,13 @@ function LoginBrowserSettings() {
       {browsers.map((item) => <DropdownMenu.Item className={styles.menuItem} key={item.id} onSelect={() => select(item.id)}><span>{browserLabel(item.id)}</span>{item.id === pref && <Check aria-hidden="true" size={16} />}</DropdownMenu.Item>)}
     </DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root>
   </div>;
+}
+
+const SETTINGS_TABS = ["general", "data", "local", "about"] as const;
+
+function settingsTabFromQuery(search = window.location.search) {
+  const tab = new URLSearchParams(search).get("tab");
+  return SETTINGS_TABS.includes(tab as (typeof SETTINGS_TABS)[number]) ? tab! : "general";
 }
 
 function SettingsPage() {
@@ -296,7 +304,7 @@ function SettingsPage() {
   return <Toast.Provider><main className={styles.shell}>
     <WindowDragSurface />
     <header className={styles.header}><a aria-label={t("back")} className={styles.back} href={resolvedHomePath()}><ArrowLeft aria-hidden="true" size={20} /></a><h1>{t("settingsTitle")}</h1></header>
-    <Tabs.Root className={styles.layout} defaultValue="general" orientation="vertical">
+    <Tabs.Root className={styles.layout} defaultValue={settingsTabFromQuery()} orientation="vertical">
       <Tabs.List aria-label={t("settingsTabs")} className={styles.nav}>
         <Tabs.Trigger className={styles.tab} value="general">{t("settingsTabGeneral")}</Tabs.Trigger>
         <Tabs.Trigger className={styles.tab} value="data">{t("settingsTabData")}</Tabs.Trigger>
@@ -373,7 +381,7 @@ function SettingsPage() {
               {updateStatus === "available" && updateVersion && (
                 <div className={styles.updateCard}>
                   <p className={styles.updateAvailable}>{t("updateAvailable", { version: updateVersion })}</p>
-                  {updateNotes && <p className={styles.updateNotes}>{updateNotes}</p>}
+                  <ReleaseNotes markdown={updateNotes} />
                 </div>
               )}
               {updateStatus === "error" && updateError && <p className={styles.updateError}>{t("updateCheckFailed", { error: updateError })}</p>}

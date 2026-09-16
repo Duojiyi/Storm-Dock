@@ -1,11 +1,16 @@
 .viewport { bottom: calc(24px + var(--download-dock-offset, 0px)); display: grid; gap: 10px; list-style: none; margin: 0; max-width: 390px; outline: none; padding: 0; position: fixed; right: 24px; width: calc(100vw - 48px); z-index: 20; }
 .toast { align-items: center; animation: enter .18s ease-out; background: var(--toast-bg); border: 1px solid var(--toast-border); border-radius: 6px; box-shadow: 0 10px 24px var(--shadow); color: var(--tooltip-fg); display: flex; font-size: 13px; gap: 8px; line-height: 1.4; padding: 11px 13px; }
-.success svg { color: var(--toast-ok); }
+.success > svg { color: var(--toast-ok); }
 .error { background: var(--toast-error-bg); border-color: var(--toast-error-border); }
-.error svg { color: var(--toast-error); }
-.loading svg { color: var(--toast-info); }
+.error > svg { color: var(--toast-error); }
+.loading > svg { color: var(--toast-info); }
+.info > svg { color: var(--toast-info); }
 .spinning { animation: spin .8s linear infinite; }
 .toast[data-state="closed"] { animation: exit .15s ease-in; }
+.action { background: transparent; border: 0; color: var(--toast-info); cursor: pointer; font: inherit; line-height: inherit; margin-left: auto; padding: 0; }
+.action:hover { text-decoration: underline; }
+.close { align-items: center; background: transparent; border: 0; color: inherit; cursor: pointer; display: inline-flex; justify-content: center; margin: 0; opacity: .55; padding: 0; }
+.close:hover { opacity: .9; }
 @keyframes enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes exit { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8px); } }
 @keyframes spin { to { transform: rotate(360deg); } }

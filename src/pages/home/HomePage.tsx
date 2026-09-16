@@ -36,6 +36,7 @@ import {
 } from "react";
 import { createRoot } from "react-dom/client";
 import { useTranslation } from "react-i18next";
+import { StartupUpdateDialog } from "../../components/StartupUpdateDialog";
 import { Toast, ToastMessage } from "../../components/ToastMessage";
 import { WindowDragSurface } from "../../components/WindowDragSurface";
 import { ExportDialog } from "../../components/ExportDialog";
@@ -1357,6 +1358,7 @@ export function HomePage() {
           title={exportKind === "grokBot" ? t("exportGrokBot") : undefined}
         />
       )}
+      <StartupUpdateDialog />
       <ToastMessage
         notice={notice}
         onOpenChange={(open) => {

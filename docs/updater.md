@@ -93,7 +93,7 @@ git push github vX.Y.Z
 
 ## 用户侧
 
-设置 → 关于 → **检查更新** → **下载并安装**。安装走 Rust 命令 `install_update_and_restart`。
+首页启动约 2.5 秒后会自动检查更新（有新版本时弹窗，可「稍后」或「下载并安装」；非 Tauri / 检查失败时静默跳过）。也可在设置 → 关于 → **检查更新** → **下载并安装**。安装走 Rust 命令 `install_update_and_restart`。
 
 ## 尚未纳入（刻意延后）
 
