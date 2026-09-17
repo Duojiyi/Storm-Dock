@@ -129,8 +129,21 @@ impl ApplicationAdapter for GrokAdapter {
         } else {
             true
         };
+        let mut next_auth = next_auth;
+        if is_oauth {
+            session::ensure_cli_auth_schema(&mut next_auth);
+        }
         if !skip_auth {
             auth::write_auth(auth_path, &next_auth)?;
+        } else if is_oauth {
+            // Same user: keep live tokens, but backfill create_time if CLI
+            // would otherwise refuse to parse auth.json.
+            if let Some(mut live) = live_auth.clone() {
+                if session::needs_cli_auth_schema_fix(&live) {
+                    session::ensure_cli_auth_schema(&mut live);
+                    auth::write_auth(auth_path, &live)?;
+                }
+            }
         }
         if let Err(error) = config::write_text(config_path, &config_text) {
             let _ = auth::restore_bytes(auth_path, previous_auth.as_deref());
@@ -298,6 +311,43 @@ mod tests {
         .unwrap();
         adapter.apply(&stale).unwrap();
         assert_eq!(fs::read(&auth_path).unwrap(), original);
+        let _ = fs::remove_file(auth_path);
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn same_user_backfills_missing_create_time_on_skip() {
+        let (adapter, auth_path, config_path) = test_adapter();
+        // Simulate a pre-fix Storm Dock write (no create_time).
+        let mut broken = session::oauth_auth_json(
+            "access-live",
+            "refresh-live",
+            Some("user-1"),
+            Some("me@x.ai"),
+            "now",
+        );
+        if let Some(entry) = broken
+            .as_object_mut()
+            .and_then(|root| root.values_mut().next())
+            .and_then(|value| value.as_object_mut())
+        {
+            entry.remove("create_time");
+        }
+        crate::grok::auth::write_auth(&auth_path, &broken).unwrap();
+        assert!(session::needs_cli_auth_schema_fix(
+            &crate::grok::auth::read_auth(&auth_path).unwrap()
+        ));
+
+        adapter.apply(&oauth_session()).unwrap();
+        let fixed = crate::grok::auth::read_auth(&auth_path).unwrap();
+        assert!(!session::needs_cli_auth_schema_fix(&fixed));
+        assert!(fixed
+            .as_object()
+            .and_then(|root| root.values().next())
+            .and_then(|value| value.get("create_time"))
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| value.contains('T')));
+
         let _ = fs::remove_file(auth_path);
         let _ = fs::remove_file(config_path);
     }

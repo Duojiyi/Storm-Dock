@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -8,10 +8,10 @@ use reqwest::redirect::Policy;
 use reqwest::Method;
 use thiserror::Error;
 
-pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-pub(crate) const USAGE_BUDGET: Duration = Duration::from_secs(15);
-pub(crate) const SUBSCRIPTION_BUDGET: Duration = Duration::from_secs(12);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const USAGE_BUDGET: Duration = Duration::from_secs(35);
+pub(crate) const SUBSCRIPTION_BUDGET: Duration = Duration::from_secs(30);
 pub(crate) const TOOLS_BUDGET: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,29 +117,79 @@ pub(crate) struct Call {
     pub(crate) body: Body,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClientKind {
+    Shared,
+    CursorWeb,
+}
+
 pub(crate) struct Client {
+    kind: ClientKind,
     inner: ReqwestClient,
 }
 
+
+type CachedClient = (Option<String>, ReqwestClient);
+
+fn cached_client(
+    slot: &Mutex<Option<CachedClient>>,
+    redirect: Policy,
+    force_refresh: bool,
+) -> ReqwestClient {
+    let proxy = env_proxy_url();
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let reuse = !force_refresh
+        && guard
+            .as_ref()
+            .is_some_and(|(cached_proxy, _)| cached_proxy == &proxy);
+    if reuse {
+        return guard.as_ref().unwrap().1.clone();
+    }
+    let client = build_client(redirect, proxy.clone());
+    *guard = Some((proxy, client.clone()));
+    client
+}
+
+fn shared_slot() -> &'static Mutex<Option<CachedClient>> {
+    static SLOT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn cursor_web_slot() -> &'static Mutex<Option<CachedClient>> {
+    static SLOT: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
+    SLOT.get_or_init(|| Mutex::new(None))
+}
+
+fn cursor_web_redirect() -> Policy {
+    Policy::custom(|attempt| {
+        if attempt.url().host_str() == Some("cursor.com") && attempt.previous().len() < 5 {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 impl Client {
-    pub(crate) fn shared() -> &'static Self {
-        static CLIENT: OnceLock<Client> = OnceLock::new();
-        CLIENT.get_or_init(|| Client {
-            inner: build_client(Policy::default()),
-        })
+    pub(crate) fn shared() -> Self {
+        Client {
+            kind: ClientKind::Shared,
+            inner: cached_client(shared_slot(), Policy::default(), false),
+        }
     }
 
-    pub(crate) fn cursor_web() -> &'static Self {
-        static CLIENT: OnceLock<Client> = OnceLock::new();
-        CLIENT.get_or_init(|| Client {
-            inner: build_client(Policy::custom(|attempt| {
-                if attempt.url().host_str() == Some("cursor.com") && attempt.previous().len() < 5 {
-                    attempt.follow()
-                } else {
-                    attempt.stop()
-                }
-            })),
-        })
+    pub(crate) fn cursor_web() -> Self {
+        Client {
+            kind: ClientKind::CursorWeb,
+            inner: cached_client(cursor_web_slot(), cursor_web_redirect(), false),
+        }
+    }
+
+    fn rebuild_inner(&self) -> ReqwestClient {
+        match self.kind {
+            ClientKind::Shared => cached_client(shared_slot(), Policy::default(), true),
+            ClientKind::CursorWeb => cached_client(cursor_web_slot(), cursor_web_redirect(), true),
+        }
     }
 
     pub(crate) fn send(
@@ -148,13 +198,15 @@ impl Client {
         budget: &Budget,
         retry: Retry,
     ) -> Result<HttpResponse, HttpError> {
+        let mut client = self.inner.clone();
         let mut last_transport = HttpError::Unreachable;
+        let mut refreshed_proxy = false;
         for attempt in 0..=1 {
             let Some(remaining) = budget.remaining() else {
                 return Err(HttpError::Deadline);
             };
             let timeout = remaining.min(REQUEST_TIMEOUT);
-            match self.attempt(call, timeout) {
+            match Self::attempt_with(&client, call, timeout) {
                 Ok(response) if retryable_status(response.status) => {
                     let reason = RetryReason::Status(response.status);
                     let wait = status_wait(response.status, response.retry_after.as_deref());
@@ -167,6 +219,19 @@ impl Client {
                 Err(error) => {
                     last_transport = error;
                     let reason = retry_reason(&last_transport);
+                    // Proxy may have come online after process start — rebuild once.
+                    if !refreshed_proxy
+                        && matches!(
+                            last_transport,
+                            HttpError::Timeout | HttpError::Unreachable
+                        )
+                    {
+                        refreshed_proxy = true;
+                        client = self.rebuild_inner();
+                        if sleep_if_budget(budget, jitter_wait()) {
+                            continue;
+                        }
+                    }
                     let wait = jitter_wait();
                     if should_retry(reason, retry, attempt) && sleep_if_budget(budget, wait) {
                         continue;
@@ -178,10 +243,14 @@ impl Client {
         Err(last_transport)
     }
 
-    fn attempt(&self, call: &Call, timeout: Duration) -> Result<RawResponse, HttpError> {
+    fn attempt_with(
+        client: &ReqwestClient,
+        call: &Call,
+        timeout: Duration,
+    ) -> Result<RawResponse, HttpError> {
         let mut request = match call.method {
-            Method::POST => self.inner.post(&call.url),
-            _ => self.inner.get(&call.url),
+            Method::POST => client.post(&call.url),
+            _ => client.get(&call.url),
         }
         .timeout(timeout);
         if !call.query.is_empty() {
@@ -232,12 +301,12 @@ impl RawResponse {
     }
 }
 
-fn build_client(redirect: Policy) -> ReqwestClient {
+fn build_client(redirect: Policy, proxy_url: Option<String>) -> ReqwestClient {
     let mut builder = ReqwestClient::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .redirect(redirect);
-    if let Some(proxy_url) = env_proxy_url() {
+    if let Some(proxy_url) = proxy_url {
         if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
             builder = builder.proxy(proxy);
         }
@@ -273,19 +342,28 @@ fn macos_system_proxy_url() -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
+    parse_scutil_proxy(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `scutil --proxy` text. Prefer HTTPS, then HTTP, then SOCKS.
+pub(crate) fn parse_scutil_proxy(text: &str) -> Option<String> {
     let mut https_enable = false;
     let mut http_enable = false;
+    let mut socks_enable = false;
     let mut https_host = None::<String>;
     let mut https_port = None::<String>;
     let mut http_host = None::<String>;
     let mut http_port = None::<String>;
+    let mut socks_host = None::<String>;
+    let mut socks_port = None::<String>;
     for line in text.lines() {
         let line = line.trim();
         if let Some(value) = line.strip_prefix("HTTPSEnable : ") {
             https_enable = value.trim() == "1";
         } else if let Some(value) = line.strip_prefix("HTTPEnable : ") {
             http_enable = value.trim() == "1";
+        } else if let Some(value) = line.strip_prefix("SOCKSEnable : ") {
+            socks_enable = value.trim() == "1";
         } else if let Some(value) = line.strip_prefix("HTTPSProxy : ") {
             https_host = Some(value.trim().to_owned());
         } else if let Some(value) = line.strip_prefix("HTTPSPort : ") {
@@ -294,6 +372,10 @@ fn macos_system_proxy_url() -> Option<String> {
             http_host = Some(value.trim().to_owned());
         } else if let Some(value) = line.strip_prefix("HTTPPort : ") {
             http_port = Some(value.trim().to_owned());
+        } else if let Some(value) = line.strip_prefix("SOCKSProxy : ") {
+            socks_host = Some(value.trim().to_owned());
+        } else if let Some(value) = line.strip_prefix("SOCKSPort : ") {
+            socks_port = Some(value.trim().to_owned());
         }
     }
     if https_enable {
@@ -304,6 +386,11 @@ fn macos_system_proxy_url() -> Option<String> {
     if http_enable {
         if let (Some(host), Some(port)) = (http_host, http_port) {
             return Some(format!("http://{host}:{port}"));
+        }
+    }
+    if socks_enable {
+        if let (Some(host), Some(port)) = (socks_host, socks_port) {
+            return Some(format!("socks5h://{host}:{port}"));
         }
     }
     None
@@ -448,5 +535,53 @@ mod tests {
             Body::Form(_)
         ));
         assert!(matches!(Body::Bytes(vec![1, 2]), Body::Bytes(_)));
+    }
+
+    #[test]
+    fn parse_scutil_prefers_https_then_http_then_socks() {
+        let https = r#"
+HTTPSEnable : 1
+HTTPSPort : 17891
+HTTPSProxy : 127.0.0.1
+HTTPEnable : 1
+HTTPPort : 17891
+HTTPProxy : 127.0.0.1
+SOCKSEnable : 1
+SOCKSPort : 17891
+SOCKSProxy : 127.0.0.1
+"#;
+        assert_eq!(
+            parse_scutil_proxy(https).as_deref(),
+            Some("http://127.0.0.1:17891")
+        );
+
+        let http_only = r#"
+HTTPSEnable : 0
+HTTPEnable : 1
+HTTPPort : 7890
+HTTPProxy : 127.0.0.1
+"#;
+        assert_eq!(
+            parse_scutil_proxy(http_only).as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+
+        let socks_only = r#"
+HTTPSEnable : 0
+HTTPEnable : 0
+SOCKSEnable : 1
+SOCKSPort : 1080
+SOCKSProxy : 127.0.0.1
+"#;
+        assert_eq!(
+            parse_scutil_proxy(socks_only).as_deref(),
+            Some("socks5h://127.0.0.1:1080")
+        );
+
+        let off = "HTTPSEnable : 0
+HTTPEnable : 0
+SOCKSEnable : 0
+";
+        assert_eq!(parse_scutil_proxy(off), None);
     }
 }

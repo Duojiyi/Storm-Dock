@@ -53,11 +53,13 @@ function grokRemainingDays(iso: string | undefined, unix?: number) {
 }
 
 export function usageLabel(account: Account, t: Translate) {
+  const resetPassed = account.application === "grok"
+    && (grokBotResetDaysRemaining(account.resetAt) ?? 0) < 0;
   let label: string | undefined;
   if (account.usage?.kind === "currency")
     label = t("usageSpent", { amount: `$${(account.usage.used / 100).toFixed(2)}` });
   else if (account.usage?.kind === "percent")
-    label = t("usagePercent", { percent: Math.round(account.usage.percent) });
+    label = t("usagePercent", { percent: resetPassed ? 0 : Math.round(account.usage.percent) });
   else if (account.subscription.plan?.toLowerCase() === "free")
     label = t("usageFree");
   const reset = account.application === "grok" ? grokBotResetLabel(account.resetAt, t) : undefined;
@@ -77,11 +79,17 @@ export function accountKindKey(account: Account) {
   return account.importType === "api_key" ? "accountKind.apiKey" : "accountKind.account";
 }
 
-export function grokBotResetLabel(resetAt: string | undefined, t: Translate) {
+/** Days until quota reset; negative means the reset time has already passed. */
+export function grokBotResetDaysRemaining(resetAt: string | undefined) {
   if (!resetAt) return undefined;
   const reset = new Date(resetAt).getTime();
   if (Number.isNaN(reset)) return undefined;
-  const days = Math.floor((reset - Date.now()) / 86_400_000);
+  return Math.floor((reset - Date.now()) / 86_400_000);
+}
+
+export function grokBotResetLabel(resetAt: string | undefined, t: Translate) {
+  const days = grokBotResetDaysRemaining(resetAt);
+  if (days === undefined) return undefined;
   if (days > 0) return t("grokBotResetDays", { count: days });
   if (days === 0) return t("grokBotResetToday");
   return t("grokBotResetPassed");
@@ -108,7 +116,8 @@ export function grokBotSourceKey(account: Account) {
 export function grokBotUsageLabel(account: Account, t: Translate) {
   const usage = account.grokBotUsage;
   if (!usage) return undefined;
-  const percent = Math.round(usage.percent);
+  const resetPassed = (grokBotResetDaysRemaining(account.grokBotResetAt) ?? 0) < 0;
+  const percent = resetPassed ? 0 : Math.round(usage.percent);
   const reset = grokBotResetLabel(account.grokBotResetAt, t);
   return reset ? t("grokBotUsageBadge", { percent, reset }) : t("grokBotUsagePercent", { percent });
 }

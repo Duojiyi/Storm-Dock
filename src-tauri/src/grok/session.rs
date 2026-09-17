@@ -137,6 +137,55 @@ pub(crate) fn api_key_auth_json(api_key: &str) -> serde_json::Value {
     serde_json::json!({ "api_key": api_key })
 }
 
+
+fn rfc3339_now() -> String {
+    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+    OffsetDateTime::from_unix_timestamp(crate::models::now() as i64)
+        .ok()
+        .and_then(|time| time.format(&Rfc3339).ok())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".into())
+}
+
+fn entry_has_create_time(entry: &serde_json::Map<String, serde_json::Value>) -> bool {
+    entry
+        .get("create_time")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+}
+
+/// Grok CLI 1.0.13+ refuses to load `~/.grok/auth.json` unless every OIDC
+/// entry includes `create_time` (RFC3339). Missing it yields
+/// `has_cached_token=false` and the TUI stuck on 连接中.
+pub(crate) fn needs_cli_auth_schema_fix(auth: &serde_json::Value) -> bool {
+    let Some(root) = auth.as_object() else {
+        return false;
+    };
+    root.values().any(|value| {
+        value
+            .as_object()
+            .is_some_and(|entry| entry.get("key").is_some() && !entry_has_create_time(entry))
+    })
+}
+
+pub(crate) fn ensure_cli_auth_schema(auth: &mut serde_json::Value) {
+    let Some(root) = auth.as_object_mut() else {
+        return;
+    };
+    let create_time = rfc3339_now();
+    for value in root.values_mut() {
+        let Some(entry) = value.as_object_mut() else {
+            continue;
+        };
+        if entry.get("key").is_some() && !entry_has_create_time(entry) {
+            entry.insert(
+                "create_time".into(),
+                serde_json::Value::String(create_time.clone()),
+            );
+        }
+    }
+}
+
 pub(crate) fn oauth_auth_json(
     access_token: &str,
     refresh_token: &str,
@@ -154,6 +203,10 @@ pub(crate) fn oauth_auth_json(
     entry.insert(
         "expires_at".into(),
         serde_json::Value::String(expires_at.into()),
+    );
+    entry.insert(
+        "create_time".into(),
+        serde_json::Value::String(rfc3339_now()),
     );
     entry.insert(
         "oidc_issuer".into(),
@@ -353,5 +406,42 @@ mod tests {
         });
         assert_eq!(access_token(&auth).as_deref(), Some("oidc"));
         assert_eq!(user_id(&auth).as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn oauth_auth_json_includes_create_time_rfc3339() {
+        let auth = oauth_auth_json(
+            "access",
+            "refresh",
+            Some("user-1"),
+            Some("me@x.ai"),
+            "2026-09-17T00:00:00Z",
+        );
+        let entry = preferred_entry(&auth).unwrap();
+        let create_time = entry.get("create_time").and_then(|v| v.as_str()).unwrap();
+        assert!(
+            create_time.contains('T'),
+            "create_time should be RFC3339, got {create_time}"
+        );
+        assert!(!needs_cli_auth_schema_fix(&auth));
+    }
+
+    #[test]
+    fn ensure_cli_auth_schema_backfills_missing_create_time() {
+        let mut auth = serde_json::json!({
+            "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+                "key": "tok",
+                "refresh_token": "rt",
+                "expires_at": "2026-09-17T00:00:00Z",
+                "auth_mode": "oidc"
+            }
+        });
+        assert!(needs_cli_auth_schema_fix(&auth));
+        ensure_cli_auth_schema(&mut auth);
+        assert!(!needs_cli_auth_schema_fix(&auth));
+        let create_time = auth["https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"]["create_time"]
+            .as_str()
+            .unwrap();
+        assert!(create_time.contains('T'));
     }
 }

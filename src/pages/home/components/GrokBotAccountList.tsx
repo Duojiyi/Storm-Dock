@@ -72,6 +72,9 @@ function SortableAccount({
             {subscription ? ` · ${subscription.expiry}` : ""}
           </span>
           {grokBotUsage && <span className={styles.metaBadge}>{grokBotUsage}</span>}
+          {account.status === "blocked" && (
+            <span className={styles.blockedBadge}>{t("tokenBlocked", { defaultValue: "账号已封禁" })}</span>
+          )}
           {account.status === "invalid" && (
             <span className={styles.invalidBadge}>{t("tokenInvalid", { defaultValue: "Token已失效" })}</span>
           )}

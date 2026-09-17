@@ -4,7 +4,7 @@ import type { Account, ApplicationKind, ApplicationStatus, CodexSession, CodexSe
 export const listApplications = () => invoke<ApplicationStatus[]>("list_applications");
 export const listAccounts = (kind: ApplicationKind) => invoke<Account[]>("list_accounts", { kind });
 export const listGrokBotAccounts = () => invoke<Account[]>("list_grok_bot_accounts");
-export const refreshGrokBotAccounts = () => invoke<{ total: number; failed: number; invalid: number; missing: number }>("refresh_grok_bot_accounts");
+export const refreshGrokBotAccounts = () => invoke<{ total: number; failed: number; invalid: number; missing: number; blocked?: number }>("refresh_grok_bot_accounts");
 export const getDatabasePath = () => invoke<string>("get_database_path");
 export const moveDatabase = (directory: string) => invoke<string>("move_database", { directory });
 export const exportDatabase = (file: string) => invoke<void>("export_database", { file });

@@ -693,6 +693,32 @@ impl Controller {
         Ok(())
     }
 
+    pub(crate) fn mark_account_blocked(&mut self, id: &str) -> Result<()> {
+        self.database.execute(
+            "UPDATE accounts SET token_status='blocked', updated_at=?1 WHERE id=?2",
+            params![now() as i64, id],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn mark_token_issue_from_message(&mut self, id: &str, message: &str) -> Result<()> {
+        if crate::error::is_account_blocked_message(message) {
+            self.mark_account_blocked(id)
+        } else if crate::error::is_token_invalid_message(message) {
+            self.mark_token_invalid(id)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn replace_account_session(&mut self, id: &str, session: &Session) -> Result<()> {
+        self.database.execute(
+            "INSERT INTO sessions (account_id, session_json) VALUES (?1, ?2) ON CONFLICT(account_id) DO UPDATE SET session_json=excluded.session_json",
+            params![id, serde_json::to_string(session)?],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn saved_cursor_usage(&self, id: &str) -> Result<Option<CursorUsageDetails>> {
         let account = self.account(id)?;
         if account.application != ApplicationKind::Cursor {

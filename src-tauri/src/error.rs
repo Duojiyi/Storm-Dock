@@ -8,6 +8,8 @@ pub(crate) enum AppError {
     AccountNotFound,
     #[error("账户凭证缺失，请重新导入该账户")]
     SecretMissing,
+    #[error("账号已被封禁")]
+    AccountBlocked,
     #[error("Token is empty or too short")]
     InvalidToken,
     #[error("JSON does not contain a supported Cursor session")]
@@ -41,3 +43,35 @@ pub(crate) enum AppError {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, AppError>;
+
+pub(crate) fn is_account_blocked_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("user account is blocked")
+        || lower.contains("account is blocked")
+        || message.contains("账号已被封禁")
+        || message.contains("账号已封禁")
+}
+
+pub(crate) fn is_token_invalid_message(message: &str) -> bool {
+    !is_account_blocked_message(message)
+        && (message.contains("失效") || message.contains("过期") || lower_contains_expired(message))
+}
+
+fn lower_contains_expired(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("invalid_grant") || lower.contains("token expired") || lower.contains("expired")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_blocked_account_messages() {
+        assert!(is_account_blocked_message("User account is blocked"));
+        assert!(is_account_blocked_message("账号已被封禁"));
+        assert!(!is_account_blocked_message("Grok 登录已失效，请重新官方登录。"));
+        assert!(is_token_invalid_message("Grok 登录已失效，请重新官方登录。"));
+        assert!(!is_token_invalid_message("User account is blocked"));
+    }
+}

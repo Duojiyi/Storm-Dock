@@ -27,8 +27,23 @@ pub(crate) struct GrokSnapshot {
     pub(crate) billing_raw: Value,
 }
 
-pub(crate) fn fetch_grok_snapshot(account: &Account, session: &Session) -> Result<GrokSnapshot> {
+
+fn ensure_grok_session(session: &Session) -> Result<(Session, serde_json::Value, bool)> {
     let auth = auth_value(session)?;
+    if !crate::grok::session::is_official_login(&auth) {
+        return Ok((session.clone(), auth, false));
+    }
+    if !crate::grok::oauth::access_token_expired(session) {
+        return Ok((session.clone(), auth, false));
+    }
+    let refreshed = crate::grok::oauth::refresh_session_auth(session)?;
+    let auth = auth_value(&refreshed)?;
+    Ok((refreshed, auth, true))
+}
+
+pub(crate) fn fetch_grok_snapshot(account: &Account, session: &Session) -> Result<(GrokSnapshot, Option<Session>)> {
+    let (live_session, auth, did_refresh) = ensure_grok_session(session)?;
+    let refreshed = did_refresh.then_some(live_session);
     let token = access_token(&auth).ok_or(AppError::SecretMissing)?;
     let user_url = format!("{CLI_CHAT_PROXY}{USER_SUBSCRIPTION_URL_PATH}");
     let settings_url = format!("{CLI_CHAT_PROXY}{SETTINGS_URL_PATH}");
@@ -94,14 +109,15 @@ pub(crate) fn fetch_grok_snapshot(account: &Account, session: &Session) -> Resul
         )
         .ok()
     };
-    grok_snapshot_from_payloads(
+    let snapshot = grok_snapshot_from_payloads(
         account,
         user.as_ref(),
         settings.as_ref(),
         &credits,
         subscriptions.as_ref(),
         jwt_plan(&token).as_deref(),
-    )
+    )?;
+    Ok((snapshot, refreshed))
 }
 
 pub(crate) fn grok_snapshot_from_payloads(
@@ -229,19 +245,19 @@ pub(crate) fn spawn_imported_refresh(app: AppHandle, account: Account) {
             return;
         };
         match fetch_grok_snapshot(&account, &session) {
-            Ok(snapshot) => {
+            Ok((snapshot, refreshed)) => {
                 if let Ok(mut controller) = app.state::<AppState>().0.lock() {
+                    if let Some(refreshed) = refreshed {
+                        let _ = controller.replace_account_session(&account.id, &refreshed);
+                    }
                     let _ = controller.save_grok_snapshot(&account.id, snapshot);
                 }
             }
-            Err(error)
-                if error.to_string().contains("失效") || error.to_string().contains("过期") =>
-            {
+            Err(error) => {
                 if let Ok(mut controller) = app.state::<AppState>().0.lock() {
-                    let _ = controller.mark_token_invalid(&account.id);
+                    let _ = controller.mark_token_issue_from_message(&account.id, &error.to_string());
                 }
             }
-            Err(_) => {}
         }
         refresh_tray(&app);
         let _ = app.emit("accounts-changed", ());

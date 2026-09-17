@@ -49,6 +49,7 @@ function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport
       {usage && <span className={styles.metaBadge}>{usage}</span>}
       {grokBotUsage && <span className={styles.metaBadge}>{grokBotUsage}</span>}
       {host && <span className={styles.metaBadge}>{host}</span>}
+      {account.status === "blocked" && <span className={styles.blockedBadge}>{t("tokenBlocked", { defaultValue: "账号已封禁" })}</span>}
       {account.status === "invalid" && <span className={styles.invalidBadge}>{t("tokenInvalid", { defaultValue: "Token已失效" })}</span>}
       {account.status === "missing" && <span className={styles.missingBadge}>{t("credentialMissing", { defaultValue: "凭证缺失" })}</span>}
     </div></div>

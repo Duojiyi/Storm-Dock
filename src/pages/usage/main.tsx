@@ -9,7 +9,8 @@ import toastStyles from "../../components/ToastMessage.module.css";
 import { Tooltip } from "../../components/Tooltip";
 import { WindowDragSurface } from "../../components/WindowDragSurface";
 import "../../i18n";
-import { applicationKindFromQuery, homePath, syncDocumentAppKind, type CursorUsageDetails } from "../../lib/types";
+import { listAccounts } from "../../lib/api";
+import { applicationKindFromQuery, homePath, syncDocumentAppKind, type Account, type CursorUsageDetails } from "../../lib/types";
 import { subscriptionPlanName } from "../home/lib/accountPresentation";
 import "../../styles/global.css";
 import { daysUntil, hasLimit, isOverLimit, metric, productParts, spendCents } from "./format";
@@ -83,6 +84,7 @@ function UsagePage() {
   const [justUpdated, setJustUpdated] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportData, setExportData] = useState<unknown>();
+  const [accountStatus, setAccountStatus] = useState<Account["status"]>();
   const flashTimer = useRef<number | undefined>(undefined);
   useEffect(() => { syncDocumentAppKind(usageKind); }, [usageKind]);
   useEffect(() => () => window.clearTimeout(flashTimer.current), []);
@@ -90,6 +92,7 @@ function UsagePage() {
     let cancelled = false;
     setData(undefined);
     setError(undefined);
+    setAccountStatus(undefined);
     if (!accountId) return () => { cancelled = true; };
     void invoke<CursorUsageDetails | null>(usageKind === "grok" ? "get_saved_grok_usage" : "get_saved_cursor_usage", { id: accountId })
       .then((usage) => {
@@ -97,6 +100,15 @@ function UsagePage() {
       })
       .catch((error) => {
         if (!cancelled) setError(error instanceof Error ? error.message : String(error));
+      });
+    void listAccounts(usageKind)
+      .then((accounts) => {
+        if (cancelled) return;
+        const match = accounts.find((account) => account.id === accountId);
+        setAccountStatus(match?.status);
+      })
+      .catch(() => {
+        /* status badge is optional */
       });
     return () => { cancelled = true; };
   }, [accountId, usageKind]);
@@ -110,6 +122,11 @@ function UsagePage() {
       const usage = await invoke<CursorUsageDetails>(usageKind === "grok" ? "get_grok_usage" : "get_cursor_usage", { id: accountId });
       if (usage.accountId !== accountId) throw new Error(t("usageAccountMismatch"));
       setData(usage);
+      setAccountStatus(undefined);
+      void listAccounts(usageKind).then((accounts) => {
+        const match = accounts.find((account) => account.id === accountId);
+        setAccountStatus(match?.status);
+      }).catch(() => undefined);
       setNoticeStatus("success");
       setNotice(t("usageRefreshed"));
       setJustUpdated(true);
@@ -117,6 +134,12 @@ function UsagePage() {
       flashTimer.current = window.setTimeout(() => setJustUpdated(false), 1400);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const lower = message.toLowerCase();
+      if (lower.includes("user account is blocked") || message.includes("账号已被封禁") || message.includes("账号已封禁")) {
+        setAccountStatus("blocked");
+      } else if (message.includes("失效") || message.includes("过期")) {
+        setAccountStatus((current) => current === "blocked" ? current : "invalid");
+      }
       setError(message);
       setNoticeStatus("error");
       setNotice(message);
@@ -147,6 +170,7 @@ function UsagePage() {
       </div>
     </header>
     {error && !(notice && noticeStatus === "error") && <p className={styles.error}>{error}</p>}
+    {!data && accountStatus === "blocked" && <p className={styles.blockedBanner}>{t("usageAccountBlocked", { defaultValue: "此账号已被封禁，无法刷新用量。请更换账号或联系服务方。" })}</p>}
     {!data && !busy && !error && <section className={styles.empty}><ChartNoAxesCombined aria-hidden="true" size={48} /><h2>{t("usageEmptyTitle")}</h2><p>{t("usageEmptyDescription")}</p></section>}
     {!data && busy && <section className={styles.empty}><LoaderCircle aria-hidden="true" className={styles.spinning} size={28} /><h2>{t(usageLoadingKey)}</h2></section>}
     {data && <section className={styles.workspace}>
@@ -154,7 +178,11 @@ function UsagePage() {
       <div className={styles.identity}>
         <strong>{data.email ?? data.label}</strong>
         {membership && <span className={styles.badge}>{membership}</span>}
+        {accountStatus === "blocked" && <span className={styles.blockedBadge}>{t("tokenBlocked", { defaultValue: "账号已封禁" })}</span>}
+        {accountStatus === "invalid" && <span className={styles.invalidBadge}>{t("tokenInvalid", { defaultValue: "Token已失效" })}</span>}
+        {accountStatus === "missing" && <span className={styles.invalidBadge}>{t("credentialMissing", { defaultValue: "凭证缺失" })}</span>}
       </div>
+      {accountStatus === "blocked" && <p className={styles.blockedBanner}>{t("usageAccountBlocked", { defaultValue: "此账号已被封禁，无法刷新用量。请更换账号或联系服务方。" })}</p>}
       <div className={styles.usageLines}>
         <p className={isOverLimit(data.primary) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(primaryLabel, data.primary, t, isGrok ? productParts(data.products) : undefined)}{isGrok && resetExact ? <span className={styles.poolReset}>{t("usageResetParen", { reset: botResetCopy(data.resetAt, t) })}</span> : null}</p>
         {data.onDemand && <p className={isOverLimit(data.onDemand) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(onDemandLabel, data.onDemand, t)}</p>}

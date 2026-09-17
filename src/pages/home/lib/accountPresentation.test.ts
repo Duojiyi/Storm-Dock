@@ -84,3 +84,23 @@ describe("account presentation", () => {
     expect(grokBotUsageLabel({ ...account, grokBotUsage: { kind: "percent", used: 10, percent: 10 } }, t)).toBe("grokBotUsagePercent:10");
   });
 });
+
+  it("formats reset-passed grok usage as 0% · reset", () => {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString();
+    expect(usageLabel({
+      ...account,
+      application: "grok",
+      usage: { kind: "percent", used: 100, percent: 100 },
+      resetAt: yesterday,
+    }, t)).toBe("usagePercent:0 · grokBotResetPassed:");
+  });
+
+  it("formats reset-passed grok bot badge as 0% · reset", () => {
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString();
+    expect(grokBotUsageLabel({
+      ...account,
+      grokBotUsage: { kind: "percent", used: 100, percent: 100 },
+      grokBotResetAt: yesterday,
+    }, t)).toBe("grokBotUsageBadge:0");
+  });
+

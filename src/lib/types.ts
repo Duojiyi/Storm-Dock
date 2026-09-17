@@ -70,7 +70,7 @@ export type Account = {
   daysRemaining?: number;
   isCurrent: boolean;
   isGrokBotCurrent?: boolean;
-  status?: "invalid" | "missing";
+  status?: "invalid" | "missing" | "blocked";
   baseUrl?: string;
 };
 

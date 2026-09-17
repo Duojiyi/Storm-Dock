@@ -765,6 +765,7 @@ export function HomePage() {
         failed: number;
         invalid: number;
         missing: number;
+        blocked?: number;
       }>(
         selected === "cursor"
           ? "refresh_all_cursor_accounts"
@@ -776,6 +777,7 @@ export function HomePage() {
       await loadAccounts();
       const other = failed - result.invalid - result.missing;
       const reasons = [
+        result.blocked && t("refreshAccountBlocked", { count: result.blocked }),
         result.invalid && t("refreshTokenInvalid", { count: result.invalid }),
         result.missing &&
           t("refreshCredentialMissing", { count: result.missing }),
@@ -807,6 +809,7 @@ export function HomePage() {
       await loadAccounts();
       const other = failed - result.invalid - result.missing;
       const reasons = [
+        result.blocked && t("refreshAccountBlocked", { count: result.blocked }),
         result.invalid && t("refreshTokenInvalid", { count: result.invalid }),
         result.missing && t("refreshCredentialMissing", { count: result.missing }),
         other && t("refreshOtherFailed", { count: other }),

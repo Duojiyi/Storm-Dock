@@ -7,7 +7,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use crate::cursor::oauth::{emit_official_login_status, OauthLoginState, OfficialLoginStatus};
 use crate::error::{AppError, Result};
 use crate::grok::session::{
-    email_from_jwt, oauth_auth_json, session_from_auth, user_id_from_jwt, XAI_CLIENT_ID, XAI_ISSUER,
+    auth_value, email, email_from_jwt, oauth_auth_json, preferred_entry,
+    session_from_auth, user_id, user_id_from_jwt, XAI_CLIENT_ID, XAI_ISSUER,
 };
 use crate::http::{Body, Budget, Call, Client, Retry, USAGE_BUDGET};
 use crate::models::{now, Account, ApplicationKind, ImportType};
@@ -282,6 +283,98 @@ fn emit_grok_login_status(
         },
     );
 }
+
+
+/// Refresh OIDC access token. Detects xAI "User account is blocked".
+pub(crate) fn refresh_session_auth(session: &crate::models::Session) -> Result<crate::models::Session> {
+    let auth = auth_value(session)?;
+    let entry = preferred_entry(&auth).ok_or(AppError::SecretMissing)?;
+    let refresh_token = entry
+        .get("refresh_token")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(AppError::SecretMissing)?;
+    let endpoints = discover_endpoints()?;
+    let response = Client::shared().send(
+        &Call {
+            method: reqwest::Method::POST,
+            url: endpoints.token_endpoint.clone(),
+            headers: vec![("User-Agent".into(), USER_AGENT.into())],
+            query: Vec::new(),
+            body: Body::form(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", XAI_CLIENT_ID),
+                ("refresh_token", refresh_token),
+            ]),
+        },
+        &Budget::new(USAGE_BUDGET),
+        Retry::Transient,
+    )?;
+    let body = response.text();
+    if body.to_ascii_lowercase().contains("user account is blocked")
+        || body.to_ascii_lowercase().contains("account is blocked")
+    {
+        return Err(AppError::AccountBlocked);
+    }
+    if !(200..300).contains(&response.status) {
+        // Try JSON error fields when HTTP is 400.
+        if let Ok(tokens) = serde_json::from_str::<OAuthTokenResponse>(&body) {
+            if tokens
+                .error
+                .as_deref()
+                .is_some_and(|error| error == "invalid_grant")
+            {
+                // Without blocked wording, treat as ordinary invalid token.
+                return Err(AppError::Message("Grok 登录已失效，请重新官方登录。".into()));
+            }
+        }
+        return Err(AppError::Message(format!(
+            "Grok token 刷新失败: HTTP {} - {}",
+            response.status,
+            body.chars().take(160).collect::<String>()
+        )));
+    }
+    let tokens: OAuthTokenResponse = serde_json::from_str(&body).map_err(|_| AppError::Message("Grok token 刷新响应无效".into()))?;
+    if let Some(error) = tokens.error.as_deref() {
+        if error == "invalid_grant" {
+            return Err(AppError::Message("Grok 登录已失效，请重新官方登录。".into()));
+        }
+        return Err(AppError::Message(format!("Grok token 刷新失败: {error}")));
+    }
+    let next_refresh = tokens
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(refresh_token);
+    session_from_auth(
+        oauth_auth_json(
+            &tokens.access_token,
+            next_refresh,
+            user_id(&auth).as_deref(),
+            email(&auth).as_deref(),
+            &expires_at(tokens.expires_in),
+        ),
+        None,
+    )
+}
+
+pub(crate) fn access_token_expired(session: &crate::models::Session) -> bool {
+    let Ok(auth) = auth_value(session) else {
+        return true;
+    };
+    let Some(entry) = preferred_entry(&auth) else {
+        return false;
+    };
+    let Some(expires) = entry.get("expires_at").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    OffsetDateTime::parse(expires, &Rfc3339)
+        .ok()
+        .is_some_and(|time| time <= OffsetDateTime::now_utc())
+}
+
 
 #[cfg(test)]
 mod tests {

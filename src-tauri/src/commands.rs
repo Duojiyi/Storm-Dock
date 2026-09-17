@@ -1547,23 +1547,26 @@ pub(crate) fn refresh_account_subscription(
     };
     if application == ApplicationKind::Grok {
         match fetch_grok_snapshot(&account, &session) {
-            Ok(snapshot) => {
-                state
+            Ok((snapshot, refreshed)) => {
+                let mut controller = state
                     .0
                     .lock()
-                    .map_err(|_| "账户存储不可用".to_string())?
+                    .map_err(|_| "账户存储不可用".to_string())?;
+                if let Some(refreshed) = refreshed {
+                    controller
+                        .replace_account_session(&id, &refreshed)
+                        .map_err(error_text)?;
+                }
+                controller
                     .save_grok_snapshot(&id, snapshot)
                     .map_err(error_text)?;
             }
             Err(error) => {
-                if error.to_string().contains("失效") || error.to_string().contains("过期") {
-                    let _ = state
-                        .0
-                        .lock()
-                        .ok()
-                        .and_then(|mut controller| controller.mark_token_invalid(&id).ok());
-                    let _ = app.emit("accounts-changed", ());
-                }
+                let message = error.to_string();
+                let _ = state.0.lock().ok().and_then(|mut controller| {
+                    controller.mark_token_issue_from_message(&id, &message).ok()
+                });
+                let _ = app.emit("accounts-changed", ());
                 return Err(error_text(error));
             }
         }
@@ -1601,6 +1604,7 @@ pub(crate) struct RefreshAccountsResult {
     pub failed: usize,
     pub invalid: usize,
     pub missing: usize,
+    pub blocked: usize,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -1719,6 +1723,7 @@ pub(crate) async fn refresh_all_cursor_accounts(
         failed,
         invalid,
         missing,
+        blocked: 0,
     })
 }
 
@@ -1767,6 +1772,7 @@ pub(crate) async fn refresh_grok_bot_accounts(
             failed: missing_credentials.len(),
             invalid: 0,
             missing: missing_credentials.len(),
+            blocked: 0,
         });
     }
     let progress_app = app.clone();
@@ -1859,6 +1865,7 @@ pub(crate) async fn refresh_grok_bot_accounts(
         failed,
         invalid,
         missing,
+        blocked: 0,
     })
 }
 
@@ -1897,6 +1904,7 @@ pub(crate) async fn refresh_all_grok_accounts(
             failed: missing_credentials.len(),
             invalid: 0,
             missing: missing_credentials.len(),
+            blocked: 0,
         });
     }
     let progress_app = app.clone();
@@ -1931,7 +1939,7 @@ pub(crate) async fn refresh_all_grok_accounts(
         let mut failures = Vec::new();
         for completed in 1..=session_count {
             match result_receiver.recv() {
-                Ok((id, Ok(summary))) => updates.push((id, summary)),
+                Ok((id, Ok((snapshot, refreshed)))) => updates.push((id, snapshot, refreshed)),
                 Ok((id, Err(error))) => failures.push((id, error.to_string())),
                 Err(_) => {
                     failures.push((String::new(), "刷新线程异常退出".into()));
@@ -1951,9 +1959,13 @@ pub(crate) async fn refresh_all_grok_accounts(
     .await
     .map_err(|error| error.to_string())?;
     let (updates, failures) = result;
+    let blocked = failures
+        .iter()
+        .filter(|(_, message)| crate::error::is_account_blocked_message(message))
+        .count();
     let invalid = failures
         .iter()
-        .filter(|(_, message)| message.contains("失效") || message.contains("过期"))
+        .filter(|(_, message)| crate::error::is_token_invalid_message(message))
         .count();
     let missing = missing_credentials.len();
     let failed = failures.len() + missing;
@@ -1962,11 +1974,14 @@ pub(crate) async fn refresh_all_grok_accounts(
         let _ = controller.mark_credential_missing(&id);
     }
     for (id, message) in failures {
-        if !id.is_empty() && (message.contains("失效") || message.contains("过期")) {
-            let _ = controller.mark_token_invalid(&id);
+        if !id.is_empty() {
+            let _ = controller.mark_token_issue_from_message(&id, &message);
         }
     }
-    for (id, snapshot) in updates {
+    for (id, snapshot, refreshed) in updates {
+        if let Some(refreshed) = refreshed {
+            let _ = controller.replace_account_session(&id, &refreshed);
+        }
         controller
             .save_grok_snapshot(&id, snapshot)
             .map_err(error_text)?;
@@ -1977,6 +1992,7 @@ pub(crate) async fn refresh_all_grok_accounts(
         failed,
         invalid,
         missing,
+        blocked,
     })
 }
 
@@ -2064,6 +2080,7 @@ pub(crate) async fn refresh_all_codex_accounts(
         failed,
         invalid,
         missing,
+        blocked: 0,
     })
 }
 
@@ -2086,26 +2103,32 @@ pub(crate) async fn get_grok_usage(
         tauri::async_runtime::spawn_blocking(move || fetch_grok_snapshot(&account, &session))
             .await
             .map_err(|error| error.to_string())?;
-    let snapshot = match usage_result {
+    let (snapshot, refreshed) = match usage_result {
         Ok(value) => value,
         Err(error) => {
             let message = error.to_string();
-            if message.contains("失效") || message.contains("过期") {
-                if let Ok(mut controller) = state.0.lock() {
-                    let _ = controller.mark_token_invalid(&id);
-                }
-                let _ = app.emit("accounts-changed", ());
+            if let Ok(mut controller) = state.0.lock() {
+                let _ = controller.mark_token_issue_from_message(&id, &message);
             }
+            let _ = app.emit("accounts-changed", ());
             return Err(error_text(error));
         }
     };
     let usage = snapshot.usage.clone();
-    state
-        .0
-        .lock()
-        .map_err(|_| "账户存储不可用".to_string())?
-        .save_grok_snapshot(&id, snapshot)
-        .map_err(error_text)?;
+    {
+        let mut controller = state
+            .0
+            .lock()
+            .map_err(|_| "账户存储不可用".to_string())?;
+        if let Some(refreshed) = refreshed {
+            controller
+                .replace_account_session(&id, &refreshed)
+                .map_err(error_text)?;
+        }
+        controller
+            .save_grok_snapshot(&id, snapshot)
+            .map_err(error_text)?;
+    }
     let _ = app.emit("accounts-changed", ());
     Ok(usage)
 }
