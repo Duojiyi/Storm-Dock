@@ -1,12 +1,12 @@
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronDown, CircleAlert, ExternalLink, LoaderCircle, RefreshCw, Zap } from "lucide-react";
+import { Check, ChevronDown, CircleAlert, ExternalLink, LoaderCircle, Play, RefreshCw, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
 import { openExternalUrl } from "../../../lib/api";
 import type { Account, GrokBotStatus } from "../../../lib/types";
-import { canLaunchGrokBot, grokBotUsageLabel } from "../lib/accountPresentation";
+import { canLaunchGrokBot, grokBotUsageLabel, isGrokBotListEligible } from "../lib/accountPresentation";
 import styles from "../page.module.css";
 
 const GROK_BOT_WEBSITE = "https://cursor.com/download/bot";
@@ -34,7 +34,7 @@ export function GrokBotStatusCard({
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [openingWebsite, setOpeningWebsite] = useState(false);
   const botAccounts = useMemo(
-    () => accounts.filter(canLaunchGrokBot),
+    () => accounts.filter((account) => canLaunchGrokBot(account) && isGrokBotListEligible(account)),
     [accounts],
   );
   const currentAccount = useMemo(() => {
@@ -51,6 +51,9 @@ export function GrokBotStatusCard({
   }, [accounts, botAccounts, status?.currentAccountId]);
   const usage = currentAccount ? grokBotUsageLabel(currentAccount, t) : undefined;
   const installed = Boolean(status?.installed);
+  const canLaunchCurrent = Boolean(
+    currentAccount && canLaunchGrokBot(currentAccount) && isGrokBotListEligible(currentAccount),
+  );
 
   const confirmOpenWebsite = async () => {
     setOpeningWebsite(true);
@@ -116,6 +119,18 @@ export function GrokBotStatusCard({
             type="button"
           >
             <RefreshCw aria-hidden="true" className={refreshing ? styles.spinning : undefined} size={16} />
+          </button>
+          <button
+            aria-label={t("launchApp")}
+            className={styles.grokBotAccountSwitch}
+            disabled={busy || !canLaunchCurrent}
+            onClick={() => {
+              if (currentAccount) onSwitchAccount(currentAccount);
+            }}
+            type="button"
+          >
+            <Play aria-hidden="true" size={14} />
+            <span className={styles.grokBotAccountSwitchLabel}>{t("launchApp")}</span>
           </button>
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>

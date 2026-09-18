@@ -12,6 +12,7 @@ import {
   grokBotSourceKey,
   grokBotUsageLabel,
   isGrokBotFreePlan,
+  isGrokBotListEligible,
   subscriptionLabel,
   subscriptionPlanBadge,
 } from "../lib/accountPresentation";
@@ -142,7 +143,8 @@ function SortableAccount({
 export function GrokBotAccountList({ accounts, onReorder, ...props }: Props) {
   const { t } = useTranslation();
   // Backend already returns Cursor (non-free) + all Grok Build (incl. free).
-  const botAccounts = accounts;
+  // Hide unknown subscription, free plan, expired token, and banned accounts.
+  const botAccounts = accounts.filter(isGrokBotListEligible);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),

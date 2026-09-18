@@ -100,6 +100,14 @@ export function isGrokBotFreePlan(account: Account) {
   return account.subscription.plan?.toLowerCase() === "free";
 }
 
+/** Exclude unknown subscription, free plan, expired token, and banned accounts from Grok Bot lists. */
+export function isGrokBotListEligible(account: Account) {
+  if (!account.subscription.plan) return false;
+  if (isGrokBotFreePlan(account)) return false;
+  if (account.status === "blocked" || account.status === "invalid") return false;
+  return true;
+}
+
 /** Cursor paid + any Grok Build account may launch Grok Bot. */
 export function canLaunchGrokBot(account: Account) {
   if (account.application === "grok") return true;
