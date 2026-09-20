@@ -6,6 +6,24 @@ Storm Dock 的重要变更记录在此。
 
 ## [Unreleased]
 
+## [1.5.6] - 2026-09-20
+
+### Added
+
+- Cursor 官方登录可选同时获取 `workos_token`（勾选后从浏览器 Cookie 读取 `WorkosCursorSessionToken`）；登录后亦可粘贴令牌。
+- macOS / Windows 自动读取 Chromium Cookie（Windows：Local State DPAPI + AES-256-GCM v10）；App-Bound Encryption（v20）暂不支持，可改用粘贴。
+- 导出对话框在 JSON 上方单独展示 `workos_token` 与一键复制（有令牌时显示）。
+- 导出 JSON 预览重构：编辑器风格 pretty-print、敏感令牌折叠/展开与悬停复制。
+
+### Changed
+
+- Grok Bot 客户端卡增加启动按钮，并过滤不可用账号。
+- macOS 授权相关路径统一走应用内原生调用（Security.framework / 进程信号等），提示应显示为 Storm Dock。
+
+### Fixed
+
+- 加强代理超时与账号封禁展示，并修正额度重置标签。
+
 ## [1.5.5] - 2026-09-16
 
 ### Added
