@@ -113,19 +113,15 @@ pub(crate) fn launch_session(id: &str) -> Result<(), String> {
     if !is_valid_id(id) {
         return Err("无效的会话标识。".into());
     }
-    std::process::Command::new("osascript")
-        .args([
-            "-e",
-            &format!("tell application \"Terminal\" to do script \"codex resume {id}\""),
-        ])
-        .status()
-        .map_err(|error| error.to_string())
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| "无法启动终端会话。".into())
-        })
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos_native::launch_terminal_command(&format!("codex resume {id}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = id;
+        Err("当前平台不支持从此处启动终端会话。".into())
+    }
 }
 
 fn find_session_path(id: &str) -> Option<PathBuf> {

@@ -1,0 +1,122 @@
+.preview {
+  --json-ch: 1ch;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  margin: 0;
+  max-height: min(52vh, 480px);
+  overflow: auto;
+  padding: 12px 14px;
+  tab-size: 2;
+}
+
+/*
+  Pretty-print line. Depth is padding so soft-wrapped continuations start at
+  the same column as the field name (first character of the line content).
+*/
+.line {
+  box-sizing: border-box;
+  max-width: 100%;
+  padding-left: calc(var(--json-depth, 0) * 2 * var(--json-ch));
+}
+
+.lineContent {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.key {
+  color: var(--info);
+}
+
+.punct {
+  color: var(--muted);
+}
+
+.string {
+  color: var(--fg);
+}
+
+.number,
+.boolean,
+.null {
+  color: var(--accent);
+}
+
+.secret {
+  display: inline;
+  padding-right: 52px;
+  position: relative;
+}
+
+.secretText {
+  color: var(--fg);
+}
+
+.secretCollapsed {
+  display: inline-block;
+  max-width: min(100%, 48ch);
+  vertical-align: bottom;
+}
+
+.secretCollapsed .secretText {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.secretExpanded .secretText {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.secretActions {
+  align-items: center;
+  display: inline-flex;
+  gap: 1px;
+  height: 1.55em;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  transition: opacity 0.12s ease;
+}
+
+.secret:hover .secretActions,
+.secret:focus-within .secretActions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.secretActions :is(button) {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: var(--muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 1.55em;
+  justify-content: center;
+  padding: 0;
+  width: 1.55em;
+}
+
+.secretActions :is(button):hover {
+  background: var(--hover);
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.secretActions :is(button)[data-copied="true"] {
+  color: var(--ok);
+}

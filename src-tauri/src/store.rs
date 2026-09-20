@@ -9,6 +9,7 @@ use std::{
 
 use crate::apps::{ApplicationAdapter, CodexAdapter, CursorAdapter, GrokAdapter};
 use crate::cursor::session::{raw_export_from_session, session_display_label};
+use crate::cursor::workos_cookie::{append_workos_token, workos_token_from_export_record};
 use crate::cursor::usage::{cursor_usage_from_snapshot, update_export_usage, usage_pools};
 use crate::desktop::{self, DesktopApp};
 use crate::error::{AppError, Result};
@@ -1210,7 +1211,54 @@ impl Controller {
                 update_export_usage(&mut record, raw, account.updated_at);
             }
         }
+        let mut workos_token = workos_token_from_export_record(&record);
+        if workos_token.is_none() {
+            if let Ok(session) = self.load_session(&account.id) {
+                workos_token = crate::cursor::workos_cookie::stored_workos_token(&session.values);
+            }
+        }
+        append_workos_token(&mut record, workos_token);
         Ok(record)
+    }
+
+
+    pub(crate) fn set_cursor_workos_token(&mut self, id: &str, token: &str) -> Result<Account> {
+        let mut account = self.account(id)?;
+        if account.application != ApplicationKind::Cursor {
+            return Err(AppError::Message("仅支持 Cursor 账号保存 Workos 令牌。".into()));
+        }
+        let cookie = crate::cursor::workos_cookie::preserve_workos_token(token)
+            .ok_or_else(|| AppError::Message("Workos 令牌格式无效。".into()))?;
+        let mut session = self.load_session(id)?;
+        session.values.insert(
+            crate::cursor::workos_cookie::WORKOS_TOKEN_KEY.into(),
+            cookie,
+        );
+        let now = now();
+        account.updated_at = now;
+        account.raw_export = raw_export_from_session(
+            &session,
+            &account.id,
+            account.created_at,
+            now,
+            account.last_used_at,
+            self.cursor.telemetry(),
+        );
+        let transaction = self.database.transaction()?;
+        transaction.execute(
+            "UPDATE accounts SET raw_export_json=?1, updated_at=?2 WHERE id=?3",
+            params![
+                serde_json::to_string(&account.raw_export)?,
+                account.updated_at as i64,
+                account.id
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO sessions (account_id, session_json) VALUES (?1, ?2) ON CONFLICT(account_id) DO UPDATE SET session_json=excluded.session_json",
+            params![account.id, serde_json::to_string(&session)?],
+        )?;
+        transaction.commit()?;
+        Ok(account)
     }
 
     pub(crate) fn require_codex_api_key(&self, id: &str) -> Result<(Account, Session)> {
@@ -1759,6 +1807,46 @@ INSERT INTO providers (id, app_type, name, settings_config, meta, is_current, in
         assert_eq!(
             account["telemetry_machine_ids"]["machineId"],
             "source-machine"
+        );
+        let _ = fs::remove_dir_all(data_dir);
+    }
+    #[test]
+    fn export_cursor_account_appends_workos_token_last() {
+        let data_dir = env::temp_dir().join(format!(
+            "storm-dock-workos-export-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut controller = Controller::new(data_dir.clone()).unwrap();
+        controller.cursor = CursorAdapter { database: None };
+        let user_id = "user_01ABCDEFGHJKMNPQRSTVWXYZ";
+        let token = "c".repeat(40);
+        let cookie = format!("{user_id}%3A%3A{}", "w".repeat(40));
+        let mut session = Session::from_import(&token).unwrap();
+        session.values.insert(
+            crate::cursor::workos_cookie::WORKOS_TOKEN_KEY.into(),
+            cookie.clone(),
+        );
+        let account = controller
+            .save_imported_session(
+                ApplicationKind::Cursor,
+                None,
+                session,
+                ImportType::Token,
+            )
+            .unwrap();
+        let exported = controller
+            .export_cursor_account(&controller.account(&account.id).unwrap())
+            .unwrap();
+        assert_eq!(
+            exported.get("workos_token").and_then(serde_json::Value::as_str),
+            Some(cookie.as_str())
+        );
+        assert_eq!(
+            exported.as_object().unwrap().keys().last().map(String::as_str),
+            Some("workos_token")
         );
         let _ = fs::remove_dir_all(data_dir);
     }

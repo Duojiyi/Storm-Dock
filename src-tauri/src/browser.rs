@@ -12,6 +12,7 @@ pub(crate) struct LoginBrowser {
     pub(crate) name: String,
 }
 
+
 struct Spec {
     id: &'static str,
     name: &'static str,
@@ -88,6 +89,7 @@ pub(crate) fn open(url: &str, browser_id: &str) -> Result<()> {
         Target::WindowsExe(path) => run(std::process::Command::new(path).arg(url).status()),
     }
 }
+
 
 fn list_with(exists: impl Fn(&Path) -> bool) -> Vec<LoginBrowser> {
     let mut browsers = vec![LoginBrowser {

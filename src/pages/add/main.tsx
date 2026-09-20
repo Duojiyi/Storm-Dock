@@ -50,6 +50,9 @@ function AddPage() {
   const loginAttempt = useRef(0);
   const loginListening = useRef(false);
   const [askBrowser] = useState(loginNeedsPicker);
+  const [captureWorkos, setCaptureWorkos] = useState(false);
+  const [pendingAccount, setPendingAccount] = useState<{ id: string; label: string }>();
+  const [workosPaste, setWorkosPaste] = useState("");
   const current = applications.find((application) => application.kind === kind);
   const showError = (error: unknown) => setNotice(error instanceof Error ? error.message : String(error));
 
@@ -87,7 +90,22 @@ function AddPage() {
     rememberLoginBrowser(browserId);
     return act(async () => {
       try {
-        const account = await invoke<{ label: string }>("start_official_login", { kind, label: null, browser: browserId });
+        const account = await invoke<{ id: string; label: string }>("start_official_login", {
+          kind,
+          label: null,
+          browser: browserId,
+          captureWorkos: kind === "cursor" ? captureWorkos : false,
+        });
+        if (kind === "cursor") {
+          setPendingAccount({ id: account.id, label: account.label });
+          setWorkosPaste("");
+          setLoginStage(undefined);
+          setLoginUrl(undefined);
+          setUserCode(undefined);
+          loginListening.current = false;
+          setNotice(t("imported", { account: account.label }));
+          return;
+        }
         returnWithNotice(t("imported", { account: account.label }));
       } catch (error) {
         if (attempt !== loginAttempt.current) return;
@@ -114,6 +132,17 @@ function AddPage() {
     setNotice(t("officialLoginCancelled"));
   };
   const reopenOfficialLogin = () => { void invoke("open_official_login_url").catch(showError); };
+  const saveWorkosPaste = () => {
+    if (!pendingAccount) return;
+    return act(async () => {
+      await invoke("set_cursor_workos_token", { id: pendingAccount.id, token: workosPaste });
+      returnWithNotice(t("workosTokenSaved"));
+    });
+  };
+  const skipWorkosPaste = () => {
+    if (!pendingAccount) return;
+    returnWithNotice(t("imported", { account: pendingAccount.label }));
+  };
   const importPayload = () => act(async () => {
     const account = await invoke<{ label: string }>("import_token_or_json", { kind, label: null, payload });
     returnWithNotice(t("imported", { account: account.label }));
@@ -136,7 +165,7 @@ function AddPage() {
           <Tabs.Trigger className={styles.tab} value="current"><RefreshCw aria-hidden="true" size={17} />{t("importCurrent")}</Tabs.Trigger>
           <Tabs.Trigger className={styles.tab} value="token"><KeyRound aria-hidden="true" size={17} />{usesApiKey ? t("apiKeyImport") : t("tokenImport")}</Tabs.Trigger>
         </Tabs.List>
-        <Tabs.Content className={styles.content} value="login"><section className={styles.panel}><div className={styles.heading}><LogIn aria-hidden="true" size={22} /><div><h2>{t("officialLoginTitle")}</h2><p>{t(isGrok ? "officialLoginDescriptionGrok" : isCodex ? "officialLoginDescriptionChatgpt" : "officialLoginDescription")}</p></div></div>{loginStage ? <p className={styles.status}>{loginStage === "importing" ? t("officialLoginImporting") : t(isGrok ? "officialLoginWaitingGrok" : isCodex ? "officialLoginWaitingChatgpt" : "officialLoginWaiting")}</p> : null}{userCode ? <p className={styles.userCode}>{userCode}</p> : null}{loginStage ? <div className={styles.actions}><button className={styles.secondary} disabled={!loginUrl || loginStage === "importing"} onClick={reopenOfficialLogin} type="button"><ExternalLink aria-hidden="true" size={16} />{t("officialLoginOpenBrowser")}</button><button className={styles.secondary} disabled={loginStage === "importing"} onClick={cancelOfficialLogin} type="button">{t("cancelLogin")}</button></div> : null}{askBrowser ? <div hidden={!!loginStage}><BrowserActionMenu className={styles.primary} disabled={busy || !!loginStage} label={t("startLogin")} onSelect={(browser) => void startOfficialLogin(browser)}><LogIn aria-hidden="true" size={18} /></BrowserActionMenu></div> : loginStage ? null : <button className={styles.primary} disabled={busy} onClick={() => void startOfficialLogin()} type="button"><LogIn aria-hidden="true" size={18} />{t("startLogin")}</button>}</section></Tabs.Content>
+        <Tabs.Content className={styles.content} value="login"><section className={styles.panel}>{pendingAccount && !isCodex && !isGrok ? <><div className={styles.heading}><KeyRound aria-hidden="true" size={22} /><div><h2>{t("pasteWorkosTitle")}</h2><p>{t("pasteWorkosDescription")}</p></div></div><div className={styles.credentialBlock}><label>{t("pasteWorkosField")}<textarea onChange={(event) => setWorkosPaste(event.target.value)} rows={5} spellCheck={false} value={workosPaste} /></label></div><div className={styles.actions}><button className={styles.secondary} disabled={busy} onClick={skipWorkosPaste} type="button">{t("pasteWorkosSkip")}</button><button className={styles.primary} disabled={busy || !workosPaste.trim()} onClick={() => void saveWorkosPaste()} type="button">{t("pasteWorkosSave")}</button></div></> : <><div className={styles.heading}><LogIn aria-hidden="true" size={22} /><div><h2>{t("officialLoginTitle")}</h2><p>{t(isGrok ? "officialLoginDescriptionGrok" : isCodex ? "officialLoginDescriptionChatgpt" : "officialLoginDescription")}</p></div></div>{loginStage ? <p className={styles.status}>{loginStage === "importing" ? t("officialLoginImporting") : t(isGrok ? "officialLoginWaitingGrok" : isCodex ? "officialLoginWaitingChatgpt" : "officialLoginWaiting")}</p> : null}{userCode ? <p className={styles.userCode}>{userCode}</p> : null}{!isCodex && !isGrok && !loginStage ? <div className={styles.optionCheck}><input checked={captureWorkos} id="capture-workos" onChange={(event) => setCaptureWorkos(event.target.checked)} type="checkbox" /><label htmlFor="capture-workos"><span>{t("captureWorkosToken")}</span><small>{t("captureWorkosTokenHint")}</small></label></div> : null}{loginStage ? <div className={styles.actions}><button className={styles.secondary} disabled={!loginUrl || loginStage === "importing"} onClick={reopenOfficialLogin} type="button"><ExternalLink aria-hidden="true" size={16} />{t("officialLoginOpenBrowser")}</button><button className={styles.secondary} disabled={loginStage === "importing"} onClick={cancelOfficialLogin} type="button">{t("cancelLogin")}</button></div> : null}{askBrowser ? <div hidden={!!loginStage}><BrowserActionMenu className={styles.primary} disabled={busy || !!loginStage} label={t("startLogin")} onSelect={(browser) => void startOfficialLogin(browser)}><LogIn aria-hidden="true" size={18} /></BrowserActionMenu></div> : loginStage ? null : <button className={styles.primary} disabled={busy} onClick={() => void startOfficialLogin()} type="button"><LogIn aria-hidden="true" size={18} />{t("startLogin")}</button>}</>}</section></Tabs.Content>
         <Tabs.Content className={styles.content} value="current"><section className={styles.panel}><div className={styles.heading}><RefreshCw aria-hidden="true" size={22} /><div><h2>{t("importCurrentTitle")}</h2><p>{current?.available ? t(isGrok ? "importCurrentDescriptionGrok" : isCodex ? "importCurrentDescriptionChatgpt" : "importCurrentDescription") : current?.reason ?? t(isGrok ? "grokNotReady" : isCodex ? "chatgptNotReady" : "cursorNotReady")}</p></div></div><button className={styles.primary} disabled={busy || !current?.available} onClick={importCurrent} type="button"><RefreshCw aria-hidden="true" size={18} />{t("importCurrent")}</button></section></Tabs.Content>
         {usesApiKey ? <Tabs.Content className={styles.content} value="token"><form className={styles.panel} onSubmit={(event) => { event.preventDefault(); void importApiKey(); }}><div className={styles.heading}><KeyRound aria-hidden="true" size={22} /><div><h2>{t("apiKeyImportTitle")}</h2><p>{t(isGrok ? "apiKeyImportDescriptionGrok" : "apiKeyImportDescription")}</p></div></div><div className={styles.credentialBlock}><label>{t("apiKeyField")}<input autoFocus autoComplete="off" onChange={(event) => setApiKey(event.target.value)} spellCheck={false} type="text" value={apiKey} /></label><label>{t("baseUrlField")}<input autoComplete="off" onChange={(event) => setBaseUrl(event.target.value)} placeholder={isGrok ? "https://api.x.ai/v1" : t("baseUrlOptional")} spellCheck={false} type="url" value={baseUrl} /></label><label>{t("accountNote")}<input autoComplete="off" onChange={(event) => setNote(event.target.value)} type="text" value={note} /></label></div><div className={styles.actions}><a className={styles.secondary} href={home}>{t("cancel")}</a><button className={styles.primary} disabled={busy || !apiKey.trim()} type="submit">{t("import")}</button></div></form></Tabs.Content> : <Tabs.Content className={styles.content} value="token"><form className={styles.panel} onSubmit={(event) => { event.preventDefault(); void importPayload(); }}><div className={styles.heading}><KeyRound aria-hidden="true" size={22} /><div><h2>{t("tokenImportTitle")}</h2><p>{t("tokenImportDescription")}</p></div></div><div className={styles.credentialBlock}><details className={styles.examples}><summary><ChevronDown aria-hidden="true" size={16} />{t("tokenExampleTitle")}</summary><div className={styles.exampleList}>{TOKEN_EXAMPLES.map((example) => <div key={example.key}><p>{t(example.key)}</p><pre>{example.sample}</pre></div>)}</div></details><label>{t("credential")}<textarea autoFocus onChange={(event) => setPayload(event.target.value)} rows={8} value={payload} /></label></div><div className={styles.actions}><a className={styles.secondary} href={home}>{t("cancel")}</a><button className={styles.primary} disabled={busy || !payload.trim()} type="submit">{t("import")}</button></div></form></Tabs.Content>}
       </Tabs.Root>

@@ -38,3 +38,8 @@
 .secondary { background: var(--solid); border-color: var(--border-strong); color: var(--fg); }
 .actions { display: flex; gap: 8px; justify-content: flex-end; }
 .toastViewport { bottom: calc(24px + var(--download-dock-offset, 0px)); display: grid; gap: 10px; list-style: none; margin: 0; max-width: 390px; outline: none; padding: 0; position: fixed; right: 24px; width: calc(100vw - 48px); z-index: 20; }
+
+.optionCheck { align-items: flex-start; display: flex; gap: 8px; }
+.optionCheck input { accent-color: var(--accent); flex: none; height: 15px; margin-top: 2px; width: 15px; }
+.optionCheck label { color: var(--fg); display: grid; font-size: 13px; font-weight: 600; gap: 4px; }
+.optionCheck small { color: var(--muted); font-size: 12px; font-weight: 500; line-height: 1.45; }

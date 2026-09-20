@@ -33,6 +33,7 @@ pub(crate) struct OauthLoginState {
     login_url: Mutex<Option<String>>,
     user_code: Mutex<Option<String>>,
     browser: Mutex<Option<String>>,
+    capture_workos: Mutex<bool>,
 }
 
 #[derive(Clone, Serialize)]
@@ -51,14 +52,29 @@ pub(crate) struct CursorOauthHandshake {
 }
 
 impl OauthLoginState {
-    pub(crate) fn begin_with_browser(&self, browser: Option<String>) -> u64 {
+    pub(crate) fn begin_with_browser(
+        &self,
+        browser: Option<String>,
+        capture_workos: bool,
+    ) -> u64 {
         let id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self
             .browser
             .lock()
             .unwrap_or_else(|error| error.into_inner()) =
             Some(crate::browser::normalize_id(browser.as_deref()));
+        *self
+            .capture_workos
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = capture_workos;
         id
+    }
+
+    pub(crate) fn capture_workos(&self) -> bool {
+        *self
+            .capture_workos
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub(crate) fn is_active(&self, id: u64) -> bool {
@@ -117,6 +133,10 @@ impl OauthLoginState {
             .browser
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = None;
+        *self
+            .capture_workos
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = false;
     }
 
     pub(crate) fn finish(&self, id: u64) {
@@ -133,6 +153,10 @@ impl OauthLoginState {
                 .browser
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = None;
+            *self
+                .capture_workos
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = false;
         }
     }
 }
@@ -375,7 +399,8 @@ pub(crate) fn complete_cursor_oauth(
     let oauth = app.state::<OauthLoginState>();
     oauth.set_url(login_id, handshake.login_url.clone())?;
     emit_official_login_status(&app, "started", Some(handshake.login_url.clone()));
-    let _ = crate::browser::open(&handshake.login_url, &oauth.browser());
+    let browser_id = oauth.browser();
+    let _ = crate::browser::open(&handshake.login_url, &browser_id);
     emit_official_login_status(&app, "waiting", Some(handshake.login_url.clone()));
     let tokens = poll_cursor_oauth(&handshake, login_id, &app)?;
     if !oauth.is_active(login_id) {
@@ -383,6 +408,18 @@ pub(crate) fn complete_cursor_oauth(
     }
     emit_official_login_status(&app, "importing", None);
     let mut session = session_from_oauth_poll(&tokens)?;
+    let expect_user = crate::cursor::session::session_user_id(&session);
+    if oauth.capture_workos() {
+        if let Some(cookie) = crate::cursor::workos_cookie::capture_workos_session_token(
+            &browser_id,
+            expect_user.as_deref(),
+        ) {
+            session.values.insert(
+                crate::cursor::workos_cookie::WORKOS_TOKEN_KEY.into(),
+                cookie,
+            );
+        }
+    }
     let subscription = enrich_cursor_session(&mut session);
     if !oauth.is_active(login_id) {
         return Err(AppError::LoginCancelled);

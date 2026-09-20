@@ -2320,10 +2320,14 @@ pub(crate) async fn start_official_login(
     kind: ApplicationKind,
     label: Option<String>,
     browser: Option<String>,
+    capture_workos: Option<bool>,
     app: AppHandle,
 ) -> std::result::Result<Account, String> {
+    let capture_workos = capture_workos.unwrap_or(false);
     if kind == ApplicationKind::Codex {
-        let login_id = app.state::<OauthLoginState>().begin_with_browser(browser);
+        let login_id = app
+            .state::<OauthLoginState>()
+            .begin_with_browser(browser, false);
         let worker = app.clone();
         return tauri::async_runtime::spawn_blocking(move || {
             crate::codex::oauth::complete_codex_oauth(label, login_id, worker)
@@ -2333,7 +2337,9 @@ pub(crate) async fn start_official_login(
         .map_err(error_text);
     }
     if kind == ApplicationKind::Grok {
-        let login_id = app.state::<OauthLoginState>().begin_with_browser(browser);
+        let login_id = app
+            .state::<OauthLoginState>()
+            .begin_with_browser(browser, false);
         let worker = app.clone();
         return tauri::async_runtime::spawn_blocking(move || {
             crate::grok::oauth::complete_grok_oauth(label, login_id, worker)
@@ -2345,11 +2351,28 @@ pub(crate) async fn start_official_login(
     if kind != ApplicationKind::Cursor {
         return Err(AppError::ComingSoon.to_string());
     }
-    let login_id = app.state::<OauthLoginState>().begin_with_browser(browser);
+    let login_id = app
+        .state::<OauthLoginState>()
+        .begin_with_browser(browser, capture_workos);
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || complete_cursor_oauth(label, login_id, worker))
         .await
         .map_err(|error| error.to_string())?
+        .map_err(error_text)
+}
+
+#[tauri::command]
+pub(crate) fn set_cursor_workos_token(
+    id: String,
+    token: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Account, String> {
+    let mut controller = state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())?;
+    controller
+        .set_cursor_workos_token(&id, &token)
         .map_err(error_text)
 }
 

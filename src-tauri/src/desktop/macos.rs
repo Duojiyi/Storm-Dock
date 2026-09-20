@@ -60,19 +60,8 @@ fn discover(app: DesktopApp) -> Option<PathBuf> {
 }
 
 fn ls_application_path(app: DesktopApp) -> Option<PathBuf> {
-    let script = match app.macos_bundle_id() {
-        Some(id) => format!("POSIX path of (path to application id \"{id}\")"),
-        None => format!("POSIX path of (path to application \"{}\")", app.name()),
-    };
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    path.is_dir().then_some(path)
+    let bundle_id = app.macos_bundle_id()?;
+    crate::macos_native::app_path_for_bundle_id(bundle_id)
 }
 
 pub(super) fn launch(app: DesktopApp) -> Result<()> {
@@ -86,10 +75,10 @@ pub(super) fn is_running(app: DesktopApp) -> bool {
     process_named(app.name())
 }
 
-fn process_named(name: &str) -> bool {
+fn each_named_pid(name: &str, mut visit: impl FnMut(i32)) {
     let needed = unsafe { proc_listpids(PROC_ALL_PIDS, 0, std::ptr::null_mut(), 0) };
     if needed <= 0 {
-        return false;
+        return;
     }
     let mut pids = vec![0i32; (needed as usize / std::mem::size_of::<i32>()) + 32];
     let filled = unsafe {
@@ -101,7 +90,7 @@ fn process_named(name: &str) -> bool {
         )
     };
     if filled <= 0 {
-        return false;
+        return;
     }
     let count = (filled as usize) / std::mem::size_of::<i32>();
     let mut buf = [0u8; 256];
@@ -111,20 +100,36 @@ fn process_named(name: &str) -> bool {
             continue;
         }
         if std::str::from_utf8(&buf[..len as usize]).is_ok_and(|proc| proc == name) {
-            return true;
+            visit(pid);
         }
     }
-    false
+}
+
+fn process_named(name: &str) -> bool {
+    let mut found = false;
+    each_named_pid(name, |_| found = true);
+    found
+}
+
+fn signal_named(name: &str, sig: i32) -> bool {
+    let mut signaled = false;
+    each_named_pid(name, |pid| {
+        if unsafe { libc::kill(pid, sig) } == 0 {
+            signaled = true;
+        }
+    });
+    signaled
 }
 
 pub(super) fn terminate(app: DesktopApp) -> Result<()> {
     if !is_running(app) {
         return Ok(());
     }
-    match Command::new("pkill").args(["-x", app.name()]).status() {
-        Ok(status) if status.success() => Ok(()),
-        _ => Err(terminate_failed(app)),
+    // In-process signal instead of `pkill`, so any system UI stays on Storm Dock.
+    if signal_named(app.name(), libc::SIGTERM) {
+        return Ok(());
     }
+    Err(terminate_failed(app))
 }
 
 pub(super) fn wait_until_stopped(app: DesktopApp) -> Result<()> {
@@ -137,12 +142,8 @@ pub(super) fn quit_and_wait(app: DesktopApp) -> Result<()> {
     if !is_running(app) {
         return Ok(());
     }
-    let script = format!("tell application \"{}\" to quit", app.name());
-    let status = Command::new("osascript")
-        .args(["-e", &script])
-        .status()
-        .map_err(|_| quit_failed(app))?;
-    if !status.success() {
+    // SIGTERM in-process — no osascript Automation prompt naming a helper tool.
+    if !signal_named(app.name(), libc::SIGTERM) {
         return Err(quit_failed(app));
     }
     wait_while_running(app, QUIT_WAIT, || quit_timeout(app))

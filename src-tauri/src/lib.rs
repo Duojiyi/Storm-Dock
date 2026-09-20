@@ -12,6 +12,8 @@ mod grok_bot;
 mod grok_bot_sessions;
 mod grok_sessions;
 mod http;
+#[cfg(target_os = "macos")]
+mod macos_native;
 mod models;
 mod sql_backup;
 mod store;
@@ -323,6 +325,7 @@ pub fn run() {
             commands::import_token_or_json,
             commands::list_login_browsers,
             commands::start_official_login,
+            commands::set_cursor_workos_token,
             commands::cancel_official_login,
             commands::open_official_login_url,
             commands::open_external_url,

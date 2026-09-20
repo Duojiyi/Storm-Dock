@@ -154,8 +154,19 @@ impl Session {
             return Err(AppError::InvalidToken);
         }
         if !raw.starts_with('{') && !raw.starts_with('[') {
+            let original = raw.to_owned();
             let (user_id, token) = split_cursor_credential(raw)?;
-            return Ok(session_from_access_token(&token, user_id));
+            let mut session = session_from_access_token(&token, user_id);
+            // Official WorkOS cookie paste / Name=value paste: keep body verbatim.
+            if let Some(cookie) = crate::cursor::workos_cookie::preserve_workos_token(&original) {
+                if original.contains("WorkosCursorSessionToken=") || original.contains("%3A%3A") {
+                    session.values.insert(
+                        crate::cursor::workos_cookie::WORKOS_TOKEN_KEY.into(),
+                        cookie,
+                    );
+                }
+            }
+            return Ok(session);
         }
 
         let value: serde_json::Value = serde_json::from_str(raw)?;
@@ -171,18 +182,35 @@ impl Session {
                 .find_map(|key| object.get(*key).and_then(serde_json::Value::as_str))
                 .map(str::to_owned)
         };
+        // Prefer JWT / access token fields for the desktop session.
+        // Keep workos_token / WorkosCursorSessionToken verbatim when present.
+        let workos_raw = text(&["workos_token", "WorkosCursorSessionToken"]);
+        let session_token_raw = text(&["sessionToken", "session_token"]);
         let credential = text(&[
             "access_token",
             "accessToken",
             ACCESS_TOKEN_KEY,
-            "sessionToken",
-            "session_token",
-            "WorkosCursorSessionToken",
             "token",
         ])
+        .or_else(|| workos_raw.clone())
+        .or_else(|| session_token_raw.clone())
         .ok_or(AppError::InvalidImport)?;
         let (user_id, access_token) = split_cursor_credential(&credential)?;
         let mut session = session_from_access_token(&access_token, user_id);
+        if let Some(cookie) = workos_raw
+            .as_deref()
+            .and_then(crate::cursor::workos_cookie::preserve_workos_token)
+            .or_else(|| {
+                session_token_raw
+                    .as_deref()
+                    .and_then(crate::cursor::workos_cookie::preserve_workos_token)
+            })
+        {
+            session.values.insert(
+                crate::cursor::workos_cookie::WORKOS_TOKEN_KEY.into(),
+                cookie,
+            );
+        }
         if let Some(refresh) = text(&["refresh_token", "refreshToken", "cursorAuth/refreshToken"]) {
             session
                 .values
@@ -214,6 +242,17 @@ impl Session {
     }
 }
 
+
+pub(crate) fn workos_token_from_session(session: &Session) -> Option<String> {
+    use crate::cursor::workos_cookie::{stored_workos_token, workos_token_from_export_record};
+    stored_workos_token(&session.values).or_else(|| {
+        session
+            .raw_export
+            .as_ref()
+            .and_then(workos_token_from_export_record)
+    })
+}
+
 pub(crate) fn raw_export_from_session(
     session: &Session,
     id: &str,
@@ -223,7 +262,12 @@ pub(crate) fn raw_export_from_session(
     telemetry: serde_json::Map<String, serde_json::Value>,
 ) -> serde_json::Value {
     if let Some(raw) = &session.raw_export {
-        return raw.clone();
+        let mut record = raw.clone();
+        crate::cursor::workos_cookie::append_workos_token(
+            &mut record,
+            workos_token_from_session(session),
+        );
+        return record;
     }
     let mut auth = serde_json::Map::new();
     let mut record = serde_json::Map::new();
@@ -260,7 +304,12 @@ pub(crate) fn raw_export_from_session(
         serde_json::Value::Object(telemetry),
     );
     record.insert("updated_at".into(), serde_json::Value::from(updated_at));
-    serde_json::Value::Object(record)
+    let mut value = serde_json::Value::Object(record);
+    crate::cursor::workos_cookie::append_workos_token(
+        &mut value,
+        workos_token_from_session(session),
+    );
+    value
 }
 
 #[cfg(test)]
@@ -357,5 +406,87 @@ mod tests {
         assert!(payload.contains('='));
         let claims = jwt_claims(&format!("header.{payload}.signature")).unwrap();
         assert_eq!(claims["email"], "me@example.com");
+    }
+
+    #[test]
+    fn raw_export_appends_stored_workos_token_last() {
+        let user_id = "user_01ABCDEFGHJKMNPQRSTVWXYZ";
+        let access = "a".repeat(40);
+        let cookie = format!("{user_id}%3A%3A{}", "w".repeat(40));
+        let mut session = Session::from_import(&access).unwrap();
+        session.values.insert(
+            crate::cursor::workos_cookie::WORKOS_TOKEN_KEY.into(),
+            cookie.clone(),
+        );
+        let exported = raw_export_from_session(
+            &session,
+            "acct",
+            1,
+            2,
+            3,
+            serde_json::Map::new(),
+        );
+        let object = exported.as_object().unwrap();
+        assert_eq!(
+            object.get("workos_token").and_then(serde_json::Value::as_str),
+            Some(cookie.as_str())
+        );
+        assert_eq!(object.keys().last().map(String::as_str), Some("workos_token"));
+    }
+
+    #[test]
+    fn jwt_json_import_preserves_workos_token_verbatim() {
+        let claims = URL_SAFE_NO_PAD.encode(
+            r#"{"sub":"auth0|user_01ABCDEFGHJKMNPQRSTVWXYZ","email":"me@example.com","exp":4102444800}"#,
+        );
+        let jwt = format!("header.{claims}.signature-padding-for-length");
+        let user_id = "user_01ABCDEFGHJKMNPQRSTVWXYZ";
+        let workos = format!("{user_id}%3A%3A{}", "z".repeat(40));
+        let payload = format!(
+            r#"{{"access_token":"{jwt}","email":"me@example.com","workos_token":"{workos}"}}"#
+        );
+        let session = Session::from_import(&payload).unwrap();
+        assert_eq!(session.values.get(ACCESS_TOKEN_KEY).map(String::as_str), Some(jwt.as_str()));
+        assert_eq!(
+            session
+                .values
+                .get(crate::cursor::workos_cookie::WORKOS_TOKEN_KEY)
+                .map(String::as_str),
+            Some(workos.as_str())
+        );
+        let exported = raw_export_from_session(
+            &session,
+            "acct",
+            1,
+            2,
+            3,
+            serde_json::Map::new(),
+        );
+        assert_eq!(
+            exported.get("workos_token").and_then(serde_json::Value::as_str),
+            Some(workos.as_str())
+        );
+        assert_eq!(
+            exported.get("access_token").and_then(serde_json::Value::as_str),
+            Some(jwt.as_str())
+        );
+    }
+
+    #[test]
+    fn raw_export_omits_workos_token_when_not_stored() {
+        let token = "a".repeat(40);
+        let session = Session {
+            values: BTreeMap::from([(ACCESS_TOKEN_KEY.into(), token)]),
+            raw_export: None,
+        };
+        let exported = raw_export_from_session(
+            &session,
+            "acct",
+            1,
+            2,
+            3,
+            serde_json::Map::new(),
+        );
+        assert!(exported.get("workos_token").is_none());
     }
 }

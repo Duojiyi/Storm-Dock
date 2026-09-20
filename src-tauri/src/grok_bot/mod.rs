@@ -64,7 +64,6 @@ use windows as platform;
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
-    use std::process::Command;
     const SAFE_STORAGE_SERVICE: &str = "Grok Bot Safe Storage";
 
     pub(crate) fn data_path() -> Result<PathBuf> {
@@ -76,18 +75,9 @@ mod platform {
         crate::desktop::ensure_installed(crate::desktop::DesktopApp::GrokBot)
     }
     fn keychain_password() -> Result<String> {
-        let output = Command::new("security")
-            .args(["find-generic-password", "-s", SAFE_STORAGE_SERVICE, "-w"])
-            .output()
-            .map_err(|e| AppError::Message(format!("无法访问 Grok Bot 钥匙串: {e}")))?;
-        if !output.status.success() {
-            return Err(AppError::Message(
-                "未授权访问 Grok Bot Safe Storage。".into(),
-            ));
-        }
-        String::from_utf8(output.stdout)
-            .map(|v| v.trim().to_owned())
-            .map_err(|_| AppError::Message("Grok Bot 钥匙串格式无效。".into()))
+        crate::macos_native::generic_password_for_service(SAFE_STORAGE_SERVICE).ok_or_else(|| {
+            AppError::Message("未授权访问 Grok Bot Safe Storage。".into())
+        })
     }
     pub(crate) fn encrypt_account_fields(
         access: &str,
