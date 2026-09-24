@@ -2,6 +2,7 @@ import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Check, ChevronDown, CircleAlert, ExternalLink, LoaderCircle, Play, RefreshCw, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useLocalCalendarDay } from "../../../lib/useLocalCalendarDay";
 import { useTranslation } from "react-i18next";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
 import { openExternalUrl } from "../../../lib/api";
@@ -31,6 +32,8 @@ export function GrokBotStatusCard({
   onError?: (error: unknown) => void;
 }) {
   const { t } = useTranslation();
+  const dayKey = useLocalCalendarDay();
+  void dayKey;
   const [websiteOpen, setWebsiteOpen] = useState(false);
   const [openingWebsite, setOpeningWebsite] = useState(false);
   const botAccounts = useMemo(
@@ -50,6 +53,8 @@ export function GrokBotStatusCard({
     );
   }, [accounts, botAccounts, status?.currentAccountId]);
   const usage = currentAccount ? grokBotUsageLabel(currentAccount, t) : undefined;
+  const usageText = usage?.text;
+  const usageTitle = usage?.title;
   const installed = Boolean(status?.installed);
   const canLaunchCurrent = Boolean(
     currentAccount && canLaunchGrokBot(currentAccount) && isGrokBotListEligible(currentAccount),
@@ -101,8 +106,8 @@ export function GrokBotStatusCard({
                     {currentAccount?.label ?? status.currentAccountLabel}
                   </span>
                 )}
-                <span className={`${styles.metaBadge} ${styles.grokBotUsageBadge}`}>
-                  {usage ?? t("grokBotUsageUnknown")}
+                <span className={`${styles.metaBadge} ${styles.grokBotUsageBadge}`} title={usageTitle}>
+                  {usageText ?? t("grokBotUsageUnknown")}
                 </span>
               </>
             ) : (
@@ -150,7 +155,7 @@ export function GrokBotStatusCard({
                 <div className={styles.grokBotAccountMenuEmpty}>{t("grokBotNoEligibleAccounts")}</div>
               ) : (
                 botAccounts.map((account) => {
-                  const accountUsage = grokBotUsageLabel(account, t) ?? t("grokBotUsageUnknown");
+                  const accountUsage = grokBotUsageLabel(account, t)?.text ?? t("grokBotUsageUnknown");
                   const isCurrent =
                     account.id === currentAccount?.id || Boolean(account.isGrokBotCurrent);
                   return (

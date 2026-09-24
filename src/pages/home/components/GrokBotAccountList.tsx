@@ -3,6 +3,7 @@ import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalList
 import { CSS } from "@dnd-kit/utilities";
 import { ChartNoAxesCombined, FileOutput, GripVertical, Trash2, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useLocalCalendarDay } from "../../../lib/useLocalCalendarDay";
 import { CurrentLaunchBadge } from "../../../components/CurrentLaunchBadge";
 import { Tooltip } from "../../../components/Tooltip";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
@@ -33,7 +34,8 @@ function SortableAccount({
   onExport,
   onLaunchBot,
   onRemove,
-}: Omit<Props, "accounts" | "onReorder"> & { account: Account }) {
+  dayKey,
+}: Omit<Props, "accounts" | "onReorder"> & { account: Account; dayKey: string }) {
   const { t } = useTranslation();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     disabled: busy,
@@ -41,6 +43,7 @@ function SortableAccount({
   });
   const subscription = subscriptionLabel(account, t);
   const planBadge = subscriptionPlanBadge(account, t);
+  void dayKey;
   const grokBotUsage = grokBotUsageLabel(account, t);
   const isActive = Boolean(account.isGrokBotCurrent);
   const launchable = canLaunchGrokBot(account);
@@ -68,11 +71,26 @@ function SortableAccount({
           <span className={`${styles.kindBadge} ${sourceClass}`}>
             {t(sourceKey === "grok" ? "grokBotSourceGrok" : "grokBotSourceCursor")}
           </span>
-          <span className={`${styles.metaBadge} ${styles[`plan-${planBadge.plan}`] ?? styles.planDefault}`}>
-            {planBadge.name}
-            {subscription ? ` · ${subscription.expiry}` : ""}
-          </span>
-          {grokBotUsage && <span className={styles.metaBadge}>{grokBotUsage}</span>}
+          {subscription?.expiryTitle ? (
+            <Tooltip content={subscription.expiryFull ?? subscription.expiryTitle}>
+              <span className={`${styles.metaBadge} ${styles[`plan-${planBadge.plan}`] ?? styles.planDefault}`} title={subscription.expiryTitle}>
+                {planBadge.name}
+                {subscription ? ` · ${subscription.expiry}` : ""}
+              </span>
+            </Tooltip>
+          ) : (
+            <span className={`${styles.metaBadge} ${styles[`plan-${planBadge.plan}`] ?? styles.planDefault}`}>
+              {planBadge.name}
+              {subscription ? ` · ${subscription.expiry}` : ""}
+            </span>
+          )}
+          {grokBotUsage && (grokBotUsage.title ? (
+            <Tooltip content={grokBotUsage.title}>
+              <span className={styles.metaBadge} title={grokBotUsage.title}>{grokBotUsage.text}</span>
+            </Tooltip>
+          ) : (
+            <span className={styles.metaBadge}>{grokBotUsage.text}</span>
+          ))}
           {account.status === "blocked" && (
             <span className={styles.blockedBadge}>{t("tokenBlocked", { defaultValue: "账号已封禁" })}</span>
           )}
@@ -141,6 +159,7 @@ function SortableAccount({
 }
 
 export function GrokBotAccountList({ accounts, onReorder, ...props }: Props) {
+  const dayKey = useLocalCalendarDay();
   const { t } = useTranslation();
   // Backend already returns Cursor (non-free) + all Grok Build (incl. free).
   // Hide unknown subscription, free plan, expired token, and banned accounts.
@@ -168,7 +187,7 @@ export function GrokBotAccountList({ accounts, onReorder, ...props }: Props) {
       <SortableContext items={botAccounts.map((account) => account.id)} strategy={verticalListSortingStrategy}>
         <div className={styles.accountList}>
           {botAccounts.map((account) => (
-            <SortableAccount {...props} account={account} key={account.id} />
+            <SortableAccount dayKey={dayKey} {...props} account={account} key={account.id} />
           ))}
         </div>
       </SortableContext>

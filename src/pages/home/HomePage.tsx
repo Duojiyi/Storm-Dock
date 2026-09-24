@@ -146,38 +146,6 @@ const workspaceSections: Array<{
   { id: "mcp", icon: Waypoints, labelKey: "mcp" },
 ];
 
-function legacySubscriptionLabel(
-  account: Account,
-  t: (key: string, options?: Record<string, unknown>) => string,
-) {
-  const plan = account.subscription.plan;
-  if (!plan) return undefined;
-  const name = t(`subscriptionPlans.${plan.toLowerCase()}`, {
-    defaultValue: plan,
-  });
-  if (!account.subscription.expiresAt)
-    return {
-      name,
-      expiry: t("subscriptionUnknownExpiry"),
-      plan: plan.toLowerCase(),
-    };
-  const days = account.daysRemaining;
-  if (days === undefined)
-    return {
-      name,
-      expiry: t("subscriptionUnknownExpiry"),
-      plan: plan.toLowerCase(),
-    };
-  if (days > 0)
-    return {
-      name,
-      expiry: t("subscriptionDays", { count: days }),
-      plan: plan.toLowerCase(),
-    };
-  if (days === 0)
-    return { name, expiry: t("subscriptionToday"), plan: plan.toLowerCase() };
-  return { name, expiry: t("subscriptionExpired"), plan: plan.toLowerCase() };
-}
 
 function legacyUsageLabel(
   account: Account,

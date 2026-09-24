@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     time::{SystemTime, UNIX_EPOCH},
 };
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{format_description::well_known::Rfc3339, Date, OffsetDateTime, UtcOffset};
 
 pub(crate) const CURSOR_KEYS: [&str; 7] = [
     "cursorAuth/accessToken",
@@ -261,11 +261,33 @@ pub(crate) fn now() -> u64 {
         .as_secs()
 }
 
+/// Local-calendar days until `expires_at` (unix seconds). Past instants return -1.
 pub(crate) fn days_remaining(expires_at: u64, current_time: u64) -> i64 {
+    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    days_remaining_with_offset(expires_at, current_time, offset)
+}
+
+pub(crate) fn days_remaining_with_offset(
+    expires_at: u64,
+    current_time: u64,
+    offset: UtcOffset,
+) -> i64 {
     if expires_at <= current_time {
         return -1;
     }
-    ((expires_at - current_time) / 86_400) as i64
+    match (
+        local_calendar_date(expires_at, offset),
+        local_calendar_date(current_time, offset),
+    ) {
+        (Some(end), Some(now)) => (end - now).whole_days(),
+        _ => ((expires_at - current_time) / 86_400) as i64,
+    }
+}
+
+fn local_calendar_date(unix_secs: u64, offset: UtcOffset) -> Option<Date> {
+    OffsetDateTime::from_unix_timestamp(unix_secs as i64)
+        .ok()
+        .map(|time| time.to_offset(offset).date())
 }
 
 pub(crate) fn parse_iso_timestamp(text: &str) -> Option<u64> {
@@ -393,12 +415,53 @@ mod tests {
     }
 
     #[test]
-    fn remaining_days_floor_elapsed_seconds() {
-        assert_eq!(days_remaining(6 * 86_400 + 1, 1 * 86_400 + 86_399), 4);
-        assert_eq!(days_remaining(1 * 86_400 + 86_399, 1 * 86_400), 0);
-        assert_eq!(days_remaining(100 + 86_400, 100), 1);
+    fn remaining_days_past_is_negative() {
         assert_eq!(days_remaining(100, 100), -1);
         assert_eq!(days_remaining(99, 100), -1);
+    }
+
+    #[test]
+    fn remaining_days_uses_local_calendar_not_elapsed_24h_buckets() {
+        // Fixed +08 offset: 2026-09-23 20:00 → 2026-09-24 02:42 is tomorrow (1),
+        // while floor(elapsed/86400) would be 0.
+        let offset = UtcOffset::from_hms(8, 0, 0).unwrap();
+        let now = OffsetDateTime::new_in_offset(
+            time::Date::from_calendar_date(2026, time::Month::September, 23).unwrap(),
+            time::Time::from_hms(20, 0, 0).unwrap(),
+            offset,
+        )
+        .unix_timestamp() as u64;
+        let reset = OffsetDateTime::new_in_offset(
+            time::Date::from_calendar_date(2026, time::Month::September, 24).unwrap(),
+            time::Time::from_hms(2, 42, 0).unwrap(),
+            offset,
+        )
+        .unix_timestamp() as u64;
+        assert_eq!(days_remaining_with_offset(reset, now, offset), 1);
+        assert_eq!(((reset - now) / 86_400) as i64, 0);
+
+        let same_day_now = OffsetDateTime::new_in_offset(
+            time::Date::from_calendar_date(2026, time::Month::September, 24).unwrap(),
+            time::Time::from_hms(1, 0, 0).unwrap(),
+            offset,
+        )
+        .unix_timestamp() as u64;
+        assert_eq!(days_remaining_with_offset(reset, same_day_now, offset), 0);
+
+        // Month-end rollover
+        let jan_eve = OffsetDateTime::new_in_offset(
+            time::Date::from_calendar_date(2026, time::Month::January, 31).unwrap(),
+            time::Time::from_hms(22, 0, 0).unwrap(),
+            offset,
+        )
+        .unix_timestamp() as u64;
+        let feb_morning = OffsetDateTime::new_in_offset(
+            time::Date::from_calendar_date(2026, time::Month::February, 1).unwrap(),
+            time::Time::from_hms(2, 0, 0).unwrap(),
+            offset,
+        )
+        .unix_timestamp() as u64;
+        assert_eq!(days_remaining_with_offset(feb_morning, jan_eve, offset), 1);
     }
 
     #[test]

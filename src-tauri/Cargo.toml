@@ -24,7 +24,7 @@ sha2 = "0.10"
 ring = "0.17"
 tauri = { version = "2.11", features = ["protocol-asset", "tray-icon", "image-png"] }
 thiserror = "2"
-time = "0.3"
+time = { version = "0.3", features = ["local-offset"] }
 toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-dialog = "2.7.2"

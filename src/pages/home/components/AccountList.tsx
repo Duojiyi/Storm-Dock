@@ -4,6 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import * as Progress from "@radix-ui/react-progress";
 import { Activity, ChartNoAxesCombined, Copy, FileOutput, GripVertical, KeyRound, LogIn, Pencil, RefreshCw, Trash2, UserRound, Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useLocalCalendarDay } from "../../../lib/useLocalCalendarDay";
 import { CurrentLaunchBadge } from "../../../components/CurrentLaunchBadge";
 import { Tooltip } from "../../../components/Tooltip";
 import grokBotIcon from "../../../assets/tools/grok-bot.png";
@@ -29,8 +30,9 @@ type Props = {
   onReorder: (activeId: string, targetId?: string) => void;
 };
 
-function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport, onRemove, onSwitch, onLaunchCurrent, onLaunchBot, onTest, progress }: Omit<Props, "accounts" | "onReorder"> & { account: Account }) {
+function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport, onRemove, onSwitch, onLaunchCurrent, onLaunchBot, onTest, progress, dayKey }: Omit<Props, "accounts" | "onReorder"> & { account: Account; dayKey: string }) {
   const { t } = useTranslation();
+  void dayKey;
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ disabled: busy, id: account.id });
   const subscription = subscriptionLabel(account, t);
   const planBadge = kind === "grok" ? subscriptionPlanBadge(account, t) : undefined;
@@ -44,10 +46,10 @@ function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport
     <GripVertical aria-label={t("drag", { account: account.label })} className={styles.dragHandle} size={24} {...attributes} {...listeners} />
     <div className={styles.accountCopy}><strong>{account.label}</strong><div className={styles.accountMeta}>
       {kind === "grok" && planBadge ? <span className={`${styles.kindBadge} ${styles[`plan-${planBadge.plan}`] ?? styles.kindGrok}`}>{planBadge.name}</span> : kind !== "cursor" ? <span className={`${styles.kindBadge} ${isApiKey ? styles.kindApiKey : styles.kindAccount}`}>{isApiKey ? <KeyRound aria-hidden="true" size={11} /> : <UserRound aria-hidden="true" size={11} />}{t(accountKindKey(account))}</span> : null}
-      {kind === "grok" && subscription ? <span className={styles.metaBadge}>{subscription.expiry}</span> : null}
-      {kind !== "grok" && !isApiKey && subscription && <span className={`${styles.metaBadge} ${styles[`plan-${subscription.plan}`] ?? styles.planDefault}`}>{subscription.name} · {subscription.expiry}</span>}
-      {usage && <span className={styles.metaBadge}>{usage}</span>}
-      {grokBotUsage && <span className={styles.metaBadge}>{grokBotUsage}</span>}
+      {kind === "grok" && subscription ? (subscription.expiryTitle ? <Tooltip content={subscription.expiryTitle}><span className={styles.metaBadge} title={subscription.expiryTitle}>{subscription.expiry}</span></Tooltip> : <span className={styles.metaBadge}>{subscription.expiry}</span>) : null}
+      {kind !== "grok" && !isApiKey && subscription && (subscription.expiryTitle ? <Tooltip content={subscription.expiryFull ?? subscription.expiryTitle}><span className={`${styles.metaBadge} ${styles[`plan-${subscription.plan}`] ?? styles.planDefault}`} title={subscription.expiryTitle}>{subscription.name} · {subscription.expiry}</span></Tooltip> : <span className={`${styles.metaBadge} ${styles[`plan-${subscription.plan}`] ?? styles.planDefault}`}>{subscription.name} · {subscription.expiry}</span>)}
+      {usage && (usage.title ? <Tooltip content={usage.title}><span className={styles.metaBadge} title={usage.title}>{usage.text}</span></Tooltip> : <span className={styles.metaBadge}>{usage.text}</span>)}
+      {grokBotUsage && (grokBotUsage.title ? <Tooltip content={grokBotUsage.title}><span className={styles.metaBadge} title={grokBotUsage.title}>{grokBotUsage.text}</span></Tooltip> : <span className={styles.metaBadge}>{grokBotUsage.text}</span>)}
       {host && <span className={styles.metaBadge}>{host}</span>}
       {account.status === "blocked" && <span className={styles.blockedBadge}>{t("tokenBlocked", { defaultValue: "账号已封禁" })}</span>}
       {account.status === "invalid" && <span className={styles.invalidBadge}>{t("tokenInvalid", { defaultValue: "Token已失效" })}</span>}
@@ -69,6 +71,7 @@ function SortableAccount({ account, kind, busy, testingId, onDuplicate, onExport
 }
 
 export function AccountList({ accounts, onReorder, progress, ...props }: Props) {
+  const dayKey = useLocalCalendarDay();
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
-  return <DndContext collisionDetection={closestCenter} onDragEnd={({ active, over }) => onReorder(String(active.id), over ? String(over.id) : undefined)} sensors={sensors}><SortableContext items={accounts.map((account) => account.id)} strategy={verticalListSortingStrategy}><div className={styles.accountList}>{accounts.map((account) => <SortableAccount {...props} account={account} key={account.id} progress={progressForAccount(progress, account.id)} />)}</div></SortableContext></DndContext>;
+  return <DndContext collisionDetection={closestCenter} onDragEnd={({ active, over }) => onReorder(String(active.id), over ? String(over.id) : undefined)} sensors={sensors}><SortableContext items={accounts.map((account) => account.id)} strategy={verticalListSortingStrategy}><div className={styles.accountList}>{accounts.map((account) => <SortableAccount dayKey={dayKey} {...props} account={account} key={account.id} progress={progressForAccount(progress, account.id)} />)}</div></SortableContext></DndContext>;
 }

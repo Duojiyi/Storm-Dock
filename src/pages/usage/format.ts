@@ -1,4 +1,14 @@
 import type { CursorUsageDetails } from "../../lib/types";
+import {
+  calendarDaysUntil,
+  formatDatedRelative,
+  localDateKey,
+  resolveInstant,
+  type DatedRelativeLabel,
+  type TranslateFn,
+} from "../../lib/calendar";
+
+export { localDateKey } from "../../lib/calendar";
 
 export const money = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 export const number = new Intl.NumberFormat();
@@ -29,10 +39,6 @@ export function productParts(products?: { name: string; percent: number }[]) {
   return products.map((item) => `${item.name} ${Math.round(item.percent)}%`).join(" + ");
 }
 
-export function localDateKey(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
-
 export function localHourKey(date = new Date()) {
   return `${localDateKey(date)}T${String(date.getHours()).padStart(2, "0")}:00`;
 }
@@ -47,13 +53,9 @@ export function hourEndMs(value: string) {
   return start === undefined ? undefined : start + 3_599_999;
 }
 
-export function daysUntil(iso?: string) {
-  if (!iso) return;
-  const reset = new Date(iso).getTime();
-  if (Number.isNaN(reset)) return;
-  const now = Date.now();
-  if (reset <= now) return -1;
-  return Math.floor((reset - now) / 86_400_000);
+/** Local calendar days until reset (not elapsed 24h buckets). */
+export function daysUntil(iso?: string, nowMs?: number) {
+  return calendarDaysUntil(iso, nowMs);
 }
 
 export function isOverLimit(value: { used: number; limit?: number | null; percent: number }) {
@@ -69,4 +71,27 @@ export function formatTokens(input?: number, output?: number) {
 export function spendCents(event: { chargedCents?: number; costUsd?: number }) {
   if (event.chargedCents !== undefined) return event.chargedCents;
   if (event.costUsd !== undefined) return event.costUsd * 100;
+}
+
+function appLocale() {
+  try {
+    return globalThis.localStorage?.getItem?.("language") ?? "zh";
+  } catch {
+    return "zh";
+  }
+}
+
+/** Quota / billing reset label with absolute local date-time when available. */
+export function resetDatedLabel(
+  resetAt: string | undefined,
+  t: TranslateFn,
+  nowMs?: number,
+): DatedRelativeLabel {
+  return formatDatedRelative({
+    instant: resolveInstant({ iso: resetAt }),
+    nowMs,
+    locale: appLocale(),
+    t,
+    kind: "reset",
+  });
 }

@@ -1,6 +1,7 @@
 import { ArrowLeft, ChartNoAxesCombined, FileOutput, LoaderCircle, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { useLocalCalendarDay } from "../../lib/useLocalCalendarDay";
 import { createRoot } from "react-dom/client";
 import { useTranslation } from "react-i18next";
 import { ExportDialog } from "../../components/ExportDialog";
@@ -11,9 +12,9 @@ import { WindowDragSurface } from "../../components/WindowDragSurface";
 import "../../i18n";
 import { listAccounts } from "../../lib/api";
 import { applicationKindFromQuery, homePath, syncDocumentAppKind, type Account, type CursorUsageDetails } from "../../lib/types";
-import { subscriptionPlanName } from "../home/lib/accountPresentation";
+import { subscriptionDatedLabel, subscriptionPlanName } from "../home/lib/accountPresentation";
 import "../../styles/global.css";
-import { daysUntil, hasLimit, isOverLimit, metric, productParts, spendCents } from "./format";
+import { hasLimit, isOverLimit, metric, productParts, resetDatedLabel, spendCents } from "./format";
 import { EventLedger } from "./EventLedger";
 import { ModelBars } from "./ModelBars";
 import { WeeklyChart } from "./WeeklyChart";
@@ -41,30 +42,13 @@ function usageUsedCopy(
   return `${label} ${amount}`;
 }
 
-function resetCopy(resetAt: string | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
-  const days = daysUntil(resetAt);
-  if (days === undefined) return t("usageUnknown");
-  if (days > 0) return t("usageResetsIn", { count: days });
-  if (days === 0) return t("usageResetsToday");
-  return t("usageResetPassed");
-}
-
-function formatResetAt(resetAt: string | undefined) {
-  if (!resetAt) return;
-  const date = new Date(resetAt);
-  if (Number.isNaN(date.getTime())) return;
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
-
-function botResetCopy(resetAt: string | undefined, t: (key: string, options?: Record<string, unknown>) => string) {
-  const relative = resetCopy(resetAt, t);
-  const exact = formatResetAt(resetAt);
-  if (!exact || relative === t("usageUnknown")) return relative;
-  return t("usageResetsWithTime", { relative, time: exact });
+function resetFull(resetAt: string | undefined, t: (key: string, options?: Record<string, unknown>) => string, nowMs?: number) {
+  return resetDatedLabel(resetAt, t, nowMs).full;
 }
 
 function UsagePage() {
   const { t } = useTranslation();
+  const dayKey = useLocalCalendarDay();
   const search = new URLSearchParams(window.location.search);
   const accountId = search.get("accountId") ?? "";
   const usageKind = search.get("kind") === "grok" ? "grok" : "cursor";
@@ -84,7 +68,8 @@ function UsagePage() {
   const [justUpdated, setJustUpdated] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportData, setExportData] = useState<unknown>();
-  const [accountStatus, setAccountStatus] = useState<Account["status"]>();
+  const [account, setAccount] = useState<Account>();
+  const accountStatus = account?.status;
   const flashTimer = useRef<number | undefined>(undefined);
   useEffect(() => { syncDocumentAppKind(usageKind); }, [usageKind]);
   useEffect(() => () => window.clearTimeout(flashTimer.current), []);
@@ -92,7 +77,7 @@ function UsagePage() {
     let cancelled = false;
     setData(undefined);
     setError(undefined);
-    setAccountStatus(undefined);
+    setAccount(undefined);
     if (!accountId) return () => { cancelled = true; };
     void invoke<CursorUsageDetails | null>(usageKind === "grok" ? "get_saved_grok_usage" : "get_saved_cursor_usage", { id: accountId })
       .then((usage) => {
@@ -104,11 +89,10 @@ function UsagePage() {
     void listAccounts(usageKind)
       .then((accounts) => {
         if (cancelled) return;
-        const match = accounts.find((account) => account.id === accountId);
-        setAccountStatus(match?.status);
+        setAccount(accounts.find((item) => item.id === accountId));
       })
       .catch(() => {
-        /* status badge is optional */
+        /* account badge is optional */
       });
     return () => { cancelled = true; };
   }, [accountId, usageKind]);
@@ -122,10 +106,9 @@ function UsagePage() {
       const usage = await invoke<CursorUsageDetails>(usageKind === "grok" ? "get_grok_usage" : "get_cursor_usage", { id: accountId });
       if (usage.accountId !== accountId) throw new Error(t("usageAccountMismatch"));
       setData(usage);
-      setAccountStatus(undefined);
+      setAccount(undefined);
       void listAccounts(usageKind).then((accounts) => {
-        const match = accounts.find((account) => account.id === accountId);
-        setAccountStatus(match?.status);
+        setAccount(accounts.find((item) => item.id === accountId));
       }).catch(() => undefined);
       setNoticeStatus("success");
       setNotice(t("usageRefreshed"));
@@ -136,9 +119,9 @@ function UsagePage() {
       const message = error instanceof Error ? error.message : String(error);
       const lower = message.toLowerCase();
       if (lower.includes("user account is blocked") || message.includes("账号已被封禁") || message.includes("账号已封禁")) {
-        setAccountStatus("blocked");
+        setAccount((current) => current ? { ...current, status: "blocked" } : current);
       } else if (message.includes("失效") || message.includes("过期")) {
-        setAccountStatus((current) => current === "blocked" ? current : "invalid");
+        setAccount((current) => current && current.status !== "blocked" ? { ...current, status: "invalid" } : current);
       }
       setError(message);
       setNoticeStatus("error");
@@ -153,7 +136,9 @@ function UsagePage() {
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
   };
   const membership = membershipLabel(data?.membershipType, t);
-  const resetExact = formatResetAt(data?.resetAt);
+  const resetLabel = data?.resetAt ? resetDatedLabel(data.resetAt, t) : undefined;
+  const subscriptionDated = account ? subscriptionDatedLabel(account, t) : undefined;
+  void dayKey; // recompute relative labels after local midnight
   const checkedAt = data ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.checkedAt * 1000)) : undefined;
   return <Toast.Provider>
     <main className={styles.shell}>
@@ -178,15 +163,24 @@ function UsagePage() {
       <div className={styles.identity}>
         <strong>{data.email ?? data.label}</strong>
         {membership && <span className={styles.badge}>{membership}</span>}
+        {subscriptionDated && subscriptionDated.days !== undefined && (
+          <span className={styles.badge} title={subscriptionDated.absolute}>
+            {account?.application === "codex"
+              ? subscriptionDated.full
+              : subscriptionDated.absolute
+                ? t("usageSubscriptionEnd", { label: subscriptionDated.full })
+                : subscriptionDated.full}
+          </span>
+        )}
         {accountStatus === "blocked" && <span className={styles.blockedBadge}>{t("tokenBlocked", { defaultValue: "账号已封禁" })}</span>}
         {accountStatus === "invalid" && <span className={styles.invalidBadge}>{t("tokenInvalid", { defaultValue: "Token已失效" })}</span>}
         {accountStatus === "missing" && <span className={styles.invalidBadge}>{t("credentialMissing", { defaultValue: "凭证缺失" })}</span>}
       </div>
       {accountStatus === "blocked" && <p className={styles.blockedBanner}>{t("usageAccountBlocked", { defaultValue: "此账号已被封禁，无法刷新用量。请更换账号或联系服务方。" })}</p>}
       <div className={styles.usageLines}>
-        <p className={isOverLimit(data.primary) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(primaryLabel, data.primary, t, isGrok ? productParts(data.products) : undefined)}{isGrok && resetExact ? <span className={styles.poolReset}>{t("usageResetParen", { reset: botResetCopy(data.resetAt, t) })}</span> : null}</p>
+        <p className={isOverLimit(data.primary) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(primaryLabel, data.primary, t, isGrok ? productParts(data.products) : undefined)}{isGrok && data.resetAt ? <span className={styles.poolReset} title={resetLabel?.absolute}>{t("usageResetParen", { reset: resetFull(data.resetAt, t) })}</span> : null}</p>
         {data.onDemand && <p className={isOverLimit(data.onDemand) ? `${styles.usageLine} ${styles.overLimit}` : styles.usageLine}>{usageUsedCopy(onDemandLabel, data.onDemand, t)}</p>}
-        {data.grokBot && <p className={styles.usageLine}>{usageUsedCopy(t("usageGrokBot"), data.grokBot, t)}{data.grokBotResetAt && <span className={styles.poolReset} title={formatResetAt(data.grokBotResetAt)}> · {botResetCopy(data.grokBotResetAt, t)}</span>}</p>}
+        {data.grokBot && <p className={styles.usageLine}>{usageUsedCopy(t("usageGrokBot"), data.grokBot, t)}{data.grokBotResetAt && <span className={styles.poolReset} title={resetDatedLabel(data.grokBotResetAt, t).absolute}> · {resetFull(data.grokBotResetAt, t)}</span>}</p>}
       </div>
       <div className={styles.charts}>
         <section><h2>{weeklyTitle}</h2>{data.weeklyAvailable ? <WeeklyChart days={data.weekly} events={data.events ?? []} /> : <p className={styles.muted}>{data.weeklyError ?? t("usageWeeklyUnavailable")}</p>}</section>
@@ -194,7 +188,7 @@ function UsagePage() {
       </div>
       <EventLedger events={data.events ?? []} unavailable={data.weeklyError} />
       <div className={styles.meta}>
-        {resetExact ? <Tooltip content={resetExact}><button className={styles.reset} type="button">{resetCopy(data.resetAt, t)}</button></Tooltip> : <span>{t("usageUnknown")}</span>}
+        {resetLabel && resetLabel.days !== undefined ? <span className={styles.reset} title={resetLabel.absolute}>{resetLabel.full}</span> : <span>{t("usageUnknown")}</span>}
         <span className={justUpdated ? styles.justUpdated : undefined}>{t("usageCheckedAt", { time: checkedAt })}</span>
       </div>
     </section>}
