@@ -336,6 +336,7 @@ fn parse_message(line: &str) -> Option<CodexSessionMessage> {
             content
         },
         timestamp: None,
+        attachments: None,
     })
 }
 

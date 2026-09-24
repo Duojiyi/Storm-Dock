@@ -24,10 +24,28 @@ pub(crate) struct CodexSession {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SessionAttachment {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<String>,
+    pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct CodexSessionMessage {
     pub(crate) role: String,
     pub(crate) content: String,
     pub(crate) timestamp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) attachments: Option<Vec<SessionAttachment>>,
 }
 
 #[derive(Deserialize)]
@@ -249,6 +267,7 @@ fn parse_message(line: &str) -> Option<CodexSessionMessage> {
             .get("timestamp")
             .and_then(crate::models::parse_timestamp)
             .map(|timestamp| timestamp.saturating_mul(1_000)),
+                attachments: None,
     })
 }
 

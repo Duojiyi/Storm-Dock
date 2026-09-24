@@ -25,6 +25,8 @@ use crate::{
     models::{Session, ACCESS_TOKEN_KEY, AUTH_ID_KEY},
 };
 
+pub(crate) mod attachments;
+
 const ACCOUNTS_KEY: &str = "cursor-accounts";
 static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 

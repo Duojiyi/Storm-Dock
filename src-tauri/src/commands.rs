@@ -1,6 +1,7 @@
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{mpsc, Arc, Mutex as StdMutex},
     thread,
 };
@@ -2656,6 +2657,106 @@ pub(crate) async fn rename_grok_bot_session(
     .await
     .map_err(|error| error.to_string())?
 }
+
+#[tauri::command]
+pub(crate) async fn export_session_attachment(
+    source: String,
+    destination: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let destination_path = PathBuf::from(destination.trim());
+    let session = grok_bot_attachment_session(&state).ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::grok_bot::attachments::export_attachment(session.as_ref(), &source, &destination_path)
+            .map_err(error_text)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn read_session_attachment_preview(
+    source: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<Option<String>, String> {
+    let session = grok_bot_attachment_session(&state).ok();
+    let mime = mime_from_source(&source);
+    if !mime.starts_with("image/") {
+        return Ok(None);
+    }
+    // Keep preview payloads small so base64 + decode stays off the UI critical path.
+    const MAX_PREVIEW_BYTES: u64 = 512 * 1024;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = crate::grok_bot::attachments::read_attachment_bytes(
+            session.as_ref(),
+            &source,
+            MAX_PREVIEW_BYTES,
+        )
+        .map_err(error_text)?;
+        Ok(bytes.map(|payload| format!("data:{mime};base64,{}", STANDARD.encode(payload))))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub(crate) async fn check_session_attachment_availability(
+    source: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<crate::grok_bot::attachments::AttachmentAvailability, String> {
+    let session = grok_bot_attachment_session(&state).ok();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::grok_bot::attachments::probe_attachment_availability(session.as_ref(), &source)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+fn grok_bot_attachment_session(state: &State<'_, AppState>) -> std::result::Result<Session, String> {
+    let mut controller = state
+        .0
+        .lock()
+        .map_err(|_| "账户存储不可用".to_string())?;
+    let accounts = controller.grok_bot_accounts();
+    let account_id = accounts
+        .iter()
+        .find(|account| account.is_grok_bot_current)
+        .map(|account| account.id.clone())
+        .or_else(|| {
+            controller
+                .grok_bot_launchable_accounts()
+                .into_iter()
+                .next()
+                .map(|account| account.id)
+        })
+        .ok_or_else(|| "未找到可用的 Grok Bot 账号。".to_string())?;
+    controller
+        .subscription_session(&account_id)
+        .or_else(|_| controller.load_session(&account_id))
+        .map_err(error_text)
+}
+
+fn mime_from_source(source: &str) -> String {
+    let path = source
+        .trim()
+        .strip_prefix("file://")
+        .unwrap_or(source.trim());
+    match Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png".into(),
+        Some("jpg") | Some("jpeg") => "image/jpeg".into(),
+        Some("gif") => "image/gif".into(),
+        Some("webp") => "image/webp".into(),
+        Some("svg") => "image/svg+xml".into(),
+        Some("bmp") => "image/bmp".into(),
+        _ => "application/octet-stream".into(),
+    }
+}
+
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]

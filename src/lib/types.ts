@@ -34,7 +34,10 @@ export type Plugin = { id: string; name: string; description?: string; icon?: st
 export type McpServer = { id: string; name: string; enabled: boolean };
 
 export type LocalSession = { id: string; title: string; projectDir?: string; sourcePath: string; updatedAt: number };
-export type LocalSessionMessage = { role: "user" | "assistant"; content: string; timestamp?: number };
+export type SessionAttachment = { id?: string; name: string; mime?: string; size?: number; url?: string; path?: string };
+export type AttachmentAvailabilityStatus = "available" | "expired" | "unavailable";
+export type AttachmentAvailability = { status: AttachmentAvailabilityStatus; reason?: string };
+export type LocalSessionMessage = { role: "user" | "assistant"; content: string; timestamp?: number; attachments?: SessionAttachment[] };
 export type SessionDeleteBatchResult = { deletedIds: string[]; failedIds: string[] };
 export type CodexSession = LocalSession;
 export type CodexSessionMessage = LocalSessionMessage;

@@ -206,6 +206,7 @@ fn parse_message(line: &str) -> Option<CodexSessionMessage> {
             .get("timestamp")
             .or_else(|| value.get("ts"))
             .and_then(timestamp_ms),
+                attachments: None,
     })
 }
 

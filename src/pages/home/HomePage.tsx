@@ -1075,18 +1075,6 @@ export function HomePage() {
         if (grokBotMode) {
           return (
             <GrokBotSessionWorkspace
-              header={
-                <GrokBotStatusCard
-                  accounts={accounts}
-                  busy={busy}
-                  loading={grokBotStatusLoading}
-                  onError={showError}
-                  onRefresh={() => void refreshGrokBotPage()}
-                  onSwitchAccount={(account) => void launchBot(account)}
-                  refreshing={grokBotStatusLoading || sessionsRefreshing}
-                  status={grokBotStatus}
-                />
-              }
               key="grokBot-sessions"
               onError={showError}
               onNotice={setNotice}

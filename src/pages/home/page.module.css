@@ -171,7 +171,9 @@
 .sessionDetailFields code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; color: var(--fg); flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; min-width: 0; overflow: auto hidden; padding: 4px 6px; white-space: nowrap; }
 .sessionDetailFields button { align-items: center; background: transparent; border: 0; border-radius: 4px; color: var(--muted); display: inline-flex; flex: 0 0 auto; height: 26px; justify-content: center; padding: 0; width: 26px; }
 .sessionDetailFields button:hover { background: var(--hover); color: var(--fg); }
-.sessionMessages { display: grid; gap: 12px; min-height: 0; overflow-y: auto; padding: 16px 18px; }
+.sessionMessages { min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 16px 18px; }
+.sessionMessagesVirtual { position: relative; width: 100%; }
+.sessionMessageRow { box-sizing: border-box; left: 0; padding-bottom: 12px; position: absolute; top: 0; width: 100%; }
 .sessionMessage { border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 8px; max-width: calc(100% - 32px); padding: 11px 13px; }
 .sessionMessageUser { background: var(--info-bg); border-color: var(--info-border); margin-left: 32px; }
 .sessionMessageAssistant { background: var(--solid); border-color: var(--border); margin-right: 32px; }
@@ -181,6 +183,19 @@
 .sessionMessageAppIcon { display: block; height: 16px; width: 16px; }
 .sessionMessage time { color: var(--muted); flex: 0 0 auto; font-size: 10px; }
 .sessionMessage p { color: var(--fg); font-size: 13px; line-height: 1.6; margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.sessionAttachments { display: grid; gap: 8px; }
+.sessionAttachment { align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; display: flex; gap: 10px; padding: 8px 10px; }
+.sessionAttachmentIcon { align-items: center; background: var(--hover); border-radius: 5px; color: var(--focus); display: inline-flex; flex: 0 0 34px; height: 34px; justify-content: center; width: 34px; }
+.sessionAttachmentPreview { background: transparent; border: 0; border-radius: 5px; display: block; flex: 0 0 auto; overflow: hidden; padding: 0; }
+.sessionAttachmentPreview img { background: var(--code-bg); border-radius: 5px; display: block; max-height: 160px; max-width: 220px; object-fit: contain; }
+.sessionAttachmentMeta { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.sessionAttachmentMeta strong { color: var(--fg); font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionAttachmentMeta span { align-items: center; color: var(--muted); display: inline-flex; font-size: 11px; gap: 4px; }
+.sessionAttachmentDownload { align-items: center; background: var(--solid); border: 1px solid var(--border); border-radius: 5px; color: var(--fg); display: inline-flex; flex: 0 0 auto; font-size: 12px; font-weight: 650; gap: 5px; min-height: 30px; padding: 0 10px; }
+.sessionAttachmentDownload:hover:not(:disabled) { background: var(--hover); }
+.sessionAttachmentDownload:disabled { cursor: not-allowed; opacity: 0.55; }
+.sessionAttachmentExpired { background: transparent; color: var(--muted); font-weight: 600; }
+.sessionAttachmentChecking { opacity: 0.7; }
 .sessionDetailEmpty { align-items: center; color: var(--muted); display: flex; flex: 1; flex-direction: column; font-size: 13px; gap: 9px; justify-content: center; min-height: 180px; text-align: center; }
 .pluginCard { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; }
 .pluginHeader { align-items: center; display: flex; gap: 12px; min-height: 50px; }

@@ -240,6 +240,18 @@ Object.assign(resources.zh.translation, {
   renameSessionDescription: "修改这个本机会话的显示名称。",
   sessionTitle: "会话名称",
   sessionRenamed: "会话名称已更新。",
+  sessionAttachmentDownload: "下载 {{name}}",
+  sessionAttachmentPreview: "预览 {{name}}",
+  sessionAttachmentSaveTitle: "保存附件",
+  sessionAttachmentSaved: "附件已保存。",
+  sessionAttachmentSaving: "保存中...",
+  sessionAttachmentOpened: "已在浏览器中打开附件。",
+  sessionAttachmentBytes: "{{count}} B",
+  sessionAttachmentKilobytes: "{{count}} KB",
+  sessionAttachmentMegabytes: "{{count}} MB",
+  sessionAttachmentChecking: "检查中...",
+  sessionAttachmentExpired: "链接已失效",
+  sessionAttachmentUnavailable: "暂时无法下载",
   savingSessionTitle: "保存中..."
 });
 Object.assign(resources.en.translation, {
@@ -410,6 +422,18 @@ Object.assign(resources.en.translation, {
   renameSessionDescription: "Change the display name of this local session.",
   sessionTitle: "Session name",
   sessionRenamed: "Session name updated.",
+  sessionAttachmentDownload: "Download {{name}}",
+  sessionAttachmentPreview: "Preview {{name}}",
+  sessionAttachmentSaveTitle: "Save attachment",
+  sessionAttachmentSaved: "Attachment saved.",
+  sessionAttachmentSaving: "Saving...",
+  sessionAttachmentOpened: "Opened the attachment in your browser.",
+  sessionAttachmentBytes: "{{count}} B",
+  sessionAttachmentKilobytes: "{{count}} KB",
+  sessionAttachmentMegabytes: "{{count}} MB",
+  sessionAttachmentChecking: "Checking...",
+  sessionAttachmentExpired: "Link expired",
+  sessionAttachmentUnavailable: "Temporarily unavailable",
   savingSessionTitle: "Saving..."
 });
 

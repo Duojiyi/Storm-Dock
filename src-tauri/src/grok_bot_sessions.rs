@@ -7,7 +7,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use crate::codex_sessions::{CodexSession, CodexSessionMessage};
+use crate::codex_sessions::{CodexSession, CodexSessionMessage, SessionAttachment};
 use crate::grok_bot;
 
 const MAX_SESSIONS: usize = 1_000;
@@ -249,6 +249,7 @@ fn parse_transcript_entry(entry: &Value) -> Option<CodexSessionMessage> {
                 role: role.into(),
                 content,
                 timestamp,
+                attachments: None,
             })
         }
         "send-message" => {
@@ -257,13 +258,21 @@ fn parse_transcript_entry(entry: &Value) -> Option<CodexSessionMessage> {
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or("text");
-            let content = match message_type {
-                "text" => message
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())?
-                    .to_owned(),
+            match message_type {
+                "text" => {
+                    let content = message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())?
+                        .to_owned();
+                    Some(CodexSessionMessage {
+                        role: "assistant".into(),
+                        content,
+                        timestamp,
+                        attachments: None,
+                    })
+                }
                 "widget" => {
                     let prompt = message
                         .get("widget")
@@ -271,18 +280,227 @@ fn parse_transcript_entry(entry: &Value) -> Option<CodexSessionMessage> {
                         .and_then(Value::as_str)
                         .map(str::trim)
                         .filter(|value| !value.is_empty())?;
-                    format!("[选项] {prompt}")
+                    Some(CodexSessionMessage {
+                        role: "assistant".into(),
+                        content: format!("[选项] {prompt}"),
+                        timestamp,
+                        attachments: None,
+                    })
                 }
-                other => format!("[{other}]"),
-            };
+                "attachment" => {
+                    let attachment = attachment_from_send_message(message)?;
+                    Some(CodexSessionMessage {
+                        role: "assistant".into(),
+                        content: String::new(),
+                        timestamp,
+                        attachments: Some(vec![attachment]),
+                    })
+                }
+                other => Some(CodexSessionMessage {
+                    role: "assistant".into(),
+                    content: format!("[{other}]"),
+                    timestamp,
+                    attachments: None,
+                }),
+            }
+        }
+        "user-attachment" => {
+            let attachment = attachment_from_user_attachment(entry)?;
             Some(CodexSessionMessage {
-                role: "assistant".into(),
-                content,
+                role: "user".into(),
+                content: String::new(),
                 timestamp,
+                attachments: Some(vec![attachment]),
             })
         }
         _ => None,
     }
+}
+
+fn attachment_from_send_message(message: &Value) -> Option<SessionAttachment> {
+    let name = message
+        .get("file_name")
+        .or_else(|| message.get("fileName"))
+        .or_else(|| message.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)?;
+    let url = message
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let path = url
+        .as_deref()
+        .and_then(path_from_url_or_path)
+        .or_else(|| {
+            message
+                .get("path")
+                .or_else(|| message.get("file_path"))
+                .or_else(|| message.get("filePath"))
+                .and_then(Value::as_str)
+                .and_then(path_from_url_or_path)
+        });
+    Some(enrich_attachment(SessionAttachment {
+        id: message
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        name: name.clone(),
+        mime: message
+            .get("mime")
+            .or_else(|| message.get("mime_type"))
+            .or_else(|| message.get("mimeType"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| guess_mime(&name)),
+        size: message
+            .get("size")
+            .or_else(|| message.get("size_bytes"))
+            .or_else(|| message.get("sizeBytes"))
+            .and_then(Value::as_u64),
+        url,
+        path,
+    }))
+}
+
+fn attachment_from_user_attachment(entry: &Value) -> Option<SessionAttachment> {
+    let name = entry
+        .get("file_name")
+        .or_else(|| entry.get("fileName"))
+        .or_else(|| entry.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)?;
+    let path = entry
+        .get("file_path")
+        .or_else(|| entry.get("filePath"))
+        .or_else(|| entry.get("path"))
+        .or_else(|| entry.get("url"))
+        .and_then(Value::as_str)
+        .and_then(path_from_url_or_path);
+    let url = entry
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| path.as_ref().map(|value| format!("file://{value}")));
+    Some(enrich_attachment(SessionAttachment {
+        id: entry.get("id").and_then(Value::as_str).map(str::to_owned),
+        name: name.clone(),
+        mime: entry
+            .get("mime")
+            .or_else(|| entry.get("mime_type"))
+            .or_else(|| entry.get("mimeType"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| guess_mime(&name)),
+        size: entry
+            .get("size")
+            .or_else(|| entry.get("size_bytes"))
+            .or_else(|| entry.get("sizeBytes"))
+            .and_then(Value::as_u64),
+        url,
+        path,
+    }))
+}
+
+fn enrich_attachment(mut attachment: SessionAttachment) -> SessionAttachment {
+    if attachment.size.is_none() {
+        if let Some(path) = attachment.path.as_deref() {
+            if let Ok(metadata) = fs::metadata(path) {
+                if metadata.is_file() {
+                    attachment.size = Some(metadata.len());
+                }
+            }
+        }
+    }
+    attachment
+}
+
+fn path_from_url_or_path(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("file://") {
+        let decoded = percent_decode(rest);
+        if decoded.is_empty() {
+            return None;
+        }
+        return Some(decoded);
+    }
+    if trimmed.starts_with('/') || trimmed.chars().nth(1) == Some(':') {
+        return Some(trimmed.to_owned());
+    }
+    None
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && bytes[index + 1].is_ascii_hexdigit()
+            && bytes[index + 2].is_ascii_hexdigit()
+        {
+            let hi = hex_value(bytes[index + 1]);
+            let lo = hex_value(bytes[index + 2]);
+            out.push((hi << 4) | lo);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|_| input.to_owned())
+}
+
+fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => 0,
+    }
+}
+
+fn guess_mime(name: &str) -> Option<String> {
+    let ext = Path::new(name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())?;
+    Some(
+        match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "svg" => "image/svg+xml",
+            "bmp" => "image/bmp",
+            "pdf" => "application/pdf",
+            "md" | "markdown" => "text/markdown",
+            "txt" => "text/plain",
+            "json" => "application/json",
+            "csv" => "text/csv",
+            "html" | "htm" => "text/html",
+            "zip" => "application/zip",
+            "ts" => "text/typescript",
+            "tsx" => "text/tsx",
+            "js" => "text/javascript",
+            "jsx" => "text/jsx",
+            "rs" => "text/x-rust",
+            "py" => "text/x-python",
+            _ => return None,
+        }
+        .to_owned(),
+    )
 }
 
 fn delete_session_from(root: &Path, id: &str) -> Result<(), String> {
@@ -614,6 +832,63 @@ mod tests {
         assert_eq!(messages[0].content, "你好");
         assert_eq!(messages[1].role, "user");
         assert_eq!(messages[1].content, "改会话列表");
+    }
+
+    #[test]
+    fn loads_attachment_messages_with_metadata() {
+        let root = temp_root("attachments");
+        let id = "55555555-5555-5555-5555-555555555555";
+        let local = root.join("note.md");
+        fs::write(&local, b"hello attachment").unwrap();
+        write_blob(
+            &root,
+            &format!("sand.client.slice.account.auth0%7Cuser_A.transcript.replicas.{id}"),
+            serde_json::json!({
+                "entries": [
+                    {
+                        "kind": "send-message",
+                        "timestampMs": 10,
+                        "message": {
+                            "type": "attachment",
+                            "url": format!("file://{}", local.display()),
+                            "file_name": "note.md"
+                        }
+                    },
+                    {
+                        "kind": "user-attachment",
+                        "id": "ua1",
+                        "timestampMs": 20,
+                        "file_path": local.display().to_string(),
+                        "file_name": "image.png"
+                    },
+                    {
+                        "kind": "send-message",
+                        "timestampMs": 30,
+                        "message": { "type": "mystery", "content": "x" }
+                    }
+                ]
+            }),
+        );
+
+        let messages = load_messages_from_root(&root, id);
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, "assistant");
+        assert!(messages[0].content.is_empty());
+        let first = messages[0].attachments.as_ref().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].name, "note.md");
+        assert_eq!(first[0].mime.as_deref(), Some("text/markdown"));
+        assert_eq!(first[0].size, Some(16));
+        assert_eq!(first[0].path.as_deref(), Some(local.to_str().unwrap()));
+
+        assert_eq!(messages[1].role, "user");
+        let second = messages[1].attachments.as_ref().unwrap();
+        assert_eq!(second[0].name, "image.png");
+        assert_eq!(second[0].mime.as_deref(), Some("image/png"));
+        assert_eq!(second[0].id.as_deref(), Some("ua1"));
+
+        assert_eq!(messages[2].content, "[mystery]");
+        assert!(messages[2].attachments.is_none());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Account, ApplicationKind, ApplicationStatus, CodexSession, CodexSessionMessage, CursorUsageDetails, GrokBotStatus, LocalSession, LocalSessionMessage, McpServer, Plugin, SessionDeleteBatchResult } from "./types";
+import type { Account, ApplicationKind, ApplicationStatus, CodexSession, CodexSessionMessage, CursorUsageDetails, GrokBotStatus, LocalSession, LocalSessionMessage, McpServer, Plugin, SessionDeleteBatchResult, AttachmentAvailability} from "./types";
 
 export const listApplications = () => invoke<ApplicationStatus[]>("list_applications");
 export const listAccounts = (kind: ApplicationKind) => invoke<Account[]>("list_accounts", { kind });
@@ -50,3 +50,10 @@ export const listMcpServers = (kind: ApplicationKind) => invoke<McpServer[]>("li
 export const setMcpServerEnabled = (kind: ApplicationKind, id: string, enabled: boolean) => invoke("set_mcp_server_enabled", { kind, id, enabled });
 export const setCursorPluginEnabled = (id: string, source: Plugin["source"], enabled: boolean) => invoke("set_cursor_plugin_enabled", { id, source, enabled });
 export const deleteCursorPlugin = (id: string, source: Plugin["source"]) => invoke("delete_cursor_plugin", { id, source });
+
+export const exportSessionAttachment = (source: string, destination: string) =>
+  invoke<void>("export_session_attachment", { source, destination });
+export const readSessionAttachmentPreview = (source: string) =>
+  invoke<string | null>("read_session_attachment_preview", { source });
+export const checkSessionAttachmentAvailability = (source: string) =>
+  invoke<AttachmentAvailability>("check_session_attachment_availability", { source });
